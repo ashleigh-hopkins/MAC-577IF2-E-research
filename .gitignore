@@ -1,0 +1,31 @@
+# Binary files
+*.bin
+*.zip
+*.png
+
+# Log files
+*.log
+
+# IDE files
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Certificate files
+*.pem
+
+# Ghidra analysis output
+ghidra_analysis/
+
+# Partial extraction files
+*.partial
+
+# Metadata files
+*_metadata.json
