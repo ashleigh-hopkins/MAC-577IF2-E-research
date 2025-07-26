@@ -36,17 +36,26 @@ These tools leverage discovered vulnerabilities to:
 
 **Complete air conditioner control via HTTP `/smart` endpoint with AES encryption.**
 
-**Features:**
-- ✅ Device status monitoring (MAC, serial, connection status, etc.)
+**Core Features:**
+- ✅ Device status monitoring (MAC, serial, connection status, temperatures, etc.)
 - ✅ Power control (on/off)
-- ✅ Temperature control (Celsius)
+- ✅ Temperature control (16-32°C)
 - ✅ Mode control (AUTO, COOL, HEAT, DRY, FAN)
 - ✅ Fan speed control (0=auto, 1-4=levels)
 - ✅ ECHONET protocol activation
 - ✅ Multiple output formats (table, JSON, CSV, XML)
 - ✅ Debug mode with raw request/response logging
 
-**Usage:**
+**Extended Features:**
+- ✅ **Vertical vane control** (independent left/right sides: auto, v1-v5, swing)
+- ✅ **Horizontal vane control** (left, center, right, combinations, swing)
+- ✅ **Dehumidifier control** (adjustable level 0-100%)
+- ✅ **Power saving mode** (enable/disable energy saving)
+- ✅ **Buzzer control** (audio feedback control)
+- ✅ **Environmental monitoring** (room & outside temperature sensors)
+- ✅ **Error detection** (abnormal states and error codes)
+
+**Basic Usage:**
 ```bash
 # Check device status
 python3 ac_control.py --ip <DEVICE_IP> --status
@@ -54,14 +63,27 @@ python3 ac_control.py --ip <DEVICE_IP> --status
 # Enable ECHONET protocol
 python3 ac_control.py --ip <DEVICE_IP> --enable-echonet
 
-# Control the air conditioner
-python3 ac_control.py --ip <DEVICE_IP> --power on --temp 24 --mode cool
-
-# Set fan speed
-python3 ac_control.py --ip <DEVICE_IP> --fan-speed 2
+# Basic control
+python3 ac_control.py --ip <DEVICE_IP> --power on --temp 24 --mode cool --fan-speed 2
 
 # Get status in JSON format with debug info
 python3 ac_control.py --ip <DEVICE_IP> --status --format json --debug
+```
+
+**Extended Control Examples:**
+```bash
+# Control vanes
+python3 ac_control.py --ip <DEVICE_IP> --vertical-vane v2 --vane-side right
+python3 ac_control.py --ip <DEVICE_IP> --horizontal-vane c
+
+# Adjust dehumidifier and power saving
+python3 ac_control.py --ip <DEVICE_IP> --dehumidifier 75 --power-saving on
+
+# Send buzzer command
+python3 ac_control.py --ip <DEVICE_IP> --buzzer
+
+# Combined settings
+python3 ac_control.py --ip <DEVICE_IP> --power on --temp 23 --mode auto --fan-speed 1 --vertical-vane swing --horizontal-vane lr
 ```
 
 ### 2. mac577if2e_dumper.py - Firmware Extraction Tool

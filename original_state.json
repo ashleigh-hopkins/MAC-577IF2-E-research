@@ -1,0 +1,11 @@
+{
+  "power": "ON",
+  "mode": "COOLER", 
+  "target_temp_celsius": 22.0,
+  "fan_speed": "AUTO",
+  "vertical_vane_right": "V1",
+  "vertical_vane_left": "AUTO", 
+  "horizontal_vane": "R",
+  "dehumidifier_setting": 70,
+  "power_saving_mode": false
+}
