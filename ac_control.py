@@ -32,60 +32,71 @@ STATIC_KEY = "unregistered"
 
 
 def generate_general_command(state: ParsedDeviceState, controls: Dict[str, bool]) -> str:
-    """Generate general control command hex string"""
+    """Generate general control command hex string with optimized selective flags
+    
+    Based on Mitsubishi protocol documentation:
+    - flags: 01 = powerState, 02 = deviceMode, 04 = setTemp, 08 = fanSpeed, 10 = vertical vanes, etc.
+    - Only sets flags for controls that are actually being changed
+    - Reduces unnecessary data transmission
+    """
     segments = {
-        'segment0': '01',
-        'segment1': '00',
-        'segment2': '00',
-        'segment3': '00',
-        'segment4': '00',
-        'segment5': '00',
-        'segment6': '00',
-        'segment7': '00',
-        'segment13': '00',
-        'segment14': '00',
-        'segment15': '00',
+        'segment0': '01',  # Group code for Power/Mode/Temp
+        'segment1': '00',  # Control flags (calculated below)
+        'segment2': '02',  # Always 2 = "do ack" (from pastebin documentation)
+        'segment3': '00',  # Power state
+        'segment4': '00',  # Device mode
+        'segment5': '00',  # Temperature fractional part
+        'segment6': '00',  # Fan speed
+        'segment7': '00',  # Vertical vane right
+        'segment8': '00',  # Unknown padding
+        'segment9': '00',  # Unknown padding
+        'segment10': '00', # Unknown padding
+        'segment11': '00', # Unknown padding
+        'segment12': '00', # Unknown padding
+        'segment13': '00', # Horizontal vane
+        'segment14': '00', # Temperature integer part
+        'segment15': '41', # Magic byte ("checkInside" or "read follows")
     }
     
-    # Calculate segment 1 value (control flags)
+    # Calculate segment 1 value (control flags) - only set flags for active controls
     segment1_value = 0
     if controls.get('power_on_off'):
-        segment1_value |= 0x01
+        segment1_value |= 0x01  # Power state flag
+        segments['segment3'] = state.power_on_off.value
+        
     if controls.get('drive_mode'):
-        segment1_value |= 0x02
+        segment1_value |= 0x02  # Device mode flag
+        segments['segment4'] = state.drive_mode.value
+        
     if controls.get('temperature'):
-        segment1_value |= 0x04
+        segment1_value |= 0x04  # Set temp flag
+        segments['segment5'] = convert_temperature(state.temperature)
+        segments['segment14'] = convert_temperature_to_segment(state.temperature)
+        
     if controls.get('wind_speed'):
-        segment1_value |= 0x08
+        segment1_value |= 0x08  # Fan speed flag
+        segments['segment6'] = f"{state.wind_speed.value:02x}"
+        
     if controls.get('up_down_wind_direct'):
-        segment1_value |= 0x10
+        segment1_value |= 0x10  # Vertical vane flag
+        segments['segment7'] = f"{state.vertical_wind_direction_right.value:02x}"
     
-    # Calculate segment 2 value
-    segment2_value = 0
+    # Calculate segment 2 value (extended control flags)
+    segment2_value = 0x02  # Always include "do ack" flag
     if controls.get('left_right_wind_direct'):
-        segment2_value |= 0x01
-    if controls.get('outside_control', True):  # Default true
-        segment2_value |= 0x02
+        segment2_value |= 0x01  # Horizontal vane flag
+        segments['segment13'] = f"{state.horizontal_wind_direction.value:02x}"
     
+    # Set the calculated flag values
     segments['segment1'] = f"{segment1_value:02x}"
     segments['segment2'] = f"{segment2_value:02x}"
-    segments['segment3'] = state.power_on_off.value
-    segments['segment4'] = state.drive_mode.value
-    segments['segment6'] = f"{state.wind_speed.value:02x}"
-    segments['segment7'] = f"{state.vertical_wind_direction_right.value:02x}"
-    segments['segment13'] = f"{state.horizontal_wind_direction.value:02x}"
-    segments['segment15'] = '41'  # checkInside: 41 true, 42 false
     
-    segments['segment5'] = convert_temperature(state.temperature)
-    segments['segment14'] = convert_temperature_to_segment(state.temperature)
-    
-    # Build payload
-    payload = '41013010'
+    # Build payload: transferMode(41) + static(013010) + data(16 segments)
+    payload = '41013010'  # 0x41 = write request, 01 30 10 = static header
     for i in range(16):
-        segment_key = f'segment{i}'
-        payload += segments.get(segment_key, '00')
+        payload += segments[f'segment{i}']
     
-    # Calculate and append FCC
+    # Calculate and append FCC checksum
     fcc = calc_fcc(payload)
     return "fc" + payload + fcc
 
