@@ -391,22 +391,9 @@ def format_output(data, format_type):
         return json.dumps(data, indent=2, ensure_ascii=False)
     
     elif format_type == 'xml':
-        # Convert dict to simple XML
+        # Convert dict to XML with full dynamic structure support
         root = ET.Element('response')
-        for key, value in data.items():
-            if isinstance(value, dict):
-                sub_elem = ET.SubElement(root, key)
-                for sub_key, sub_value in value.items():
-                    sub_sub_elem = ET.SubElement(sub_elem, sub_key)
-                    sub_sub_elem.text = str(sub_value)
-            elif isinstance(value, list):
-                sub_elem = ET.SubElement(root, key)
-                for i, item in enumerate(value):
-                    item_elem = ET.SubElement(sub_elem, f'item_{i}')
-                    item_elem.text = str(item)
-            else:
-                elem = ET.SubElement(root, key)
-                elem.text = str(value) if value is not None else ''
+        _dict_to_xml_recursive(data, root)
         return ET.tostring(root, encoding='unicode')
     
     elif format_type == 'csv':
@@ -425,6 +412,52 @@ def format_output(data, format_type):
     
     else:  # table format (default)
         return format_table(data)
+
+def _dict_to_xml_recursive(data, parent_element):
+    """Recursively convert dictionary to XML elements with full structure support"""
+    if isinstance(data, dict):
+        for key, value in data.items():
+            # Sanitize key name for valid XML element names
+            element_name = _sanitize_xml_name(key)
+            
+            if isinstance(value, dict):
+                # Create sub-element for nested dictionary
+                sub_element = ET.SubElement(parent_element, element_name)
+                _dict_to_xml_recursive(value, sub_element)
+            elif isinstance(value, list):
+                # Handle lists - create container element
+                list_container = ET.SubElement(parent_element, element_name)
+                for i, item in enumerate(value):
+                    if isinstance(item, (dict, list)):
+                        # Complex item - create indexed sub-element
+                        item_element = ET.SubElement(list_container, f"item_{i}")
+                        _dict_to_xml_recursive(item, item_element)
+                    else:
+                        # Simple item - create value element
+                        item_element = ET.SubElement(list_container, "value")
+                        item_element.text = str(item) if item is not None else ''
+            else:
+                # Simple value - create text element
+                element = ET.SubElement(parent_element, element_name)
+                element.text = str(value) if value is not None else ''
+    elif isinstance(data, list):
+        # Handle case where root data is a list
+        for i, item in enumerate(data):
+            item_element = ET.SubElement(parent_element, f"item_{i}")
+            _dict_to_xml_recursive(item, item_element)
+    else:
+        # Simple value at root level
+        parent_element.text = str(data) if data is not None else ''
+
+def _sanitize_xml_name(name):
+    """Sanitize string to be a valid XML element name"""
+    import re
+    # Replace invalid characters with underscores
+    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', str(name))
+    # Ensure it starts with a letter or underscore
+    if sanitized and not sanitized[0].isalpha() and sanitized[0] != '_':
+        sanitized = '_' + sanitized
+    return sanitized or 'element'
 
 def flatten_dict(d, parent_key='', sep='_'):
     """Flatten nested dictionary for CSV output"""
