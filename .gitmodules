@@ -1,3 +1,6 @@
 [submodule "homebridge-mitsubishi-electric-aircon"]
 	path = homebridge-mitsubishi-electric-aircon
 	url = https://github.com/LeeChSien/homebridge-mitsubishi-electric-aircon.git
+[submodule "meldec"]
+	path = meldec
+	url = https://github.com/ncaunt/meldec.git
