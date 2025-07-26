@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""
+Mitsubishi Air Conditioner Controller
+
+Dynamic XML/JSON parser and formatter for Mitsubishi air conditioner device responses.
+Supports multiple output formats: JSON, XML, CSV, and table.
+Includes command generation and state parsing for AC control operations.
+"""
 
 import base64
 import requests
@@ -9,59 +16,105 @@ import json
 import argparse
 import csv
 import sys
-from enum import Enum
-from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from typing import Dict, Any
+
+# Import our custom parser module
+from mitsubishi_parser import (
+    PowerOnOff, DriveMode, WindSpeed, VerticalWindDirection, HorizontalWindDirection,
+    GeneralStates, SensorStates, ErrorStates, ParsedDeviceState,
+    parse_code_values, calc_fcc, convert_temperature, convert_temperature_to_segment
+)
 
 # Constants from the working implementation
 KEY_SIZE = 16
 STATIC_KEY = "unregistered"
 
-class PowerState(Enum):
-    OFF = 0
-    ON = 1
 
-class DriveMode(Enum):
-    AUTO = 0
-    COOL = 1
-    DRY = 2
-    FAN = 3
-    HEAT = 4
 
-class WindSpeed(Enum):
-    AUTO = 0
-    LEVEL_1 = 1
-    LEVEL_2 = 2
-    LEVEL_3 = 3
-    LEVEL_4 = 4
+def generate_general_command(state: ParsedDeviceState, controls: Dict[str, bool]) -> str:
+    """Generate general control command hex string"""
+    segments = {
+        'segment0': '01',
+        'segment1': '00',
+        'segment2': '00',
+        'segment3': '00',
+        'segment4': '00',
+        'segment5': '00',
+        'segment6': '00',
+        'segment7': '00',
+        'segment13': '00',
+        'segment14': '00',
+        'segment15': '00',
+    }
+    
+    # Calculate segment 1 value (control flags)
+    segment1_value = 0
+    if controls.get('power_on_off'):
+        segment1_value |= 0x01
+    if controls.get('drive_mode'):
+        segment1_value |= 0x02
+    if controls.get('temperature'):
+        segment1_value |= 0x04
+    if controls.get('wind_speed'):
+        segment1_value |= 0x08
+    if controls.get('up_down_wind_direct'):
+        segment1_value |= 0x10
+    
+    # Calculate segment 2 value
+    segment2_value = 0
+    if controls.get('left_right_wind_direct'):
+        segment2_value |= 0x01
+    if controls.get('outside_control', True):  # Default true
+        segment2_value |= 0x02
+    
+    segments['segment1'] = f"{segment1_value:02x}"
+    segments['segment2'] = f"{segment2_value:02x}"
+    segments['segment3'] = state.power_on_off.value
+    segments['segment4'] = state.drive_mode.value
+    segments['segment6'] = f"{state.wind_speed.value:02x}"
+    segments['segment7'] = f"{state.vertical_wind_direction_right.value:02x}"
+    segments['segment13'] = f"{state.horizontal_wind_direction.value:02x}"
+    segments['segment15'] = '41'  # checkInside: 41 true, 42 false
+    
+    segments['segment5'] = convert_temperature(state.temperature)
+    segments['segment14'] = convert_temperature_to_segment(state.temperature)
+    
+    # Build payload
+    payload = '41013010'
+    for i in range(16):
+        segment_key = f'segment{i}'
+        payload += segments.get(segment_key, '00')
+    
+    # Calculate and append FCC
+    fcc = calc_fcc(payload)
+    return "fc" + payload + fcc
 
-class VerticalWindDirection(Enum):
-    AUTO = 0
-    LEVEL_1 = 1
-    LEVEL_2 = 2
-    LEVEL_3 = 3
-    LEVEL_4 = 4
-    LEVEL_5 = 5
-    SWING = 7
-
-@dataclass
-class AirconState:
-    power_on: bool = False
-    drive_mode: DriveMode = DriveMode.AUTO
-    temperature: int = 220  # 22.0°C in 0.1°C units
-    room_temperature: int = 220  # 22.0°C in 0.1°C units
-    wind_speed: WindSpeed = WindSpeed.AUTO
-    vertical_wind_direction_right: VerticalWindDirection = VerticalWindDirection.AUTO
-    vertical_wind_direction_left: VerticalWindDirection = VerticalWindDirection.AUTO
-    mac: str = ""
-    serial: str = ""
-    rssi: str = ""
-    app_version: str = ""
+def generate_extend08_command(state: ParsedDeviceState, controls: Dict[str, bool]) -> str:
+    """Generate extend08 command for buzzer, dehum, power saving, etc."""
+    segment_x_value = 0
+    if controls.get('dehum'):
+        segment_x_value |= 0x04
+    if controls.get('power_saving'):
+        segment_x_value |= 0x08
+    if controls.get('buzzer'):
+        segment_x_value |= 0x10
+    if controls.get('wind_and_wind_break'):
+        segment_x_value |= 0x20
+    
+    segment_x = f"{segment_x_value:02x}"
+    segment_y = f"{state.dehum_setting:02x}" if controls.get('dehum') else '00'
+    segment_z = '0A' if state.is_power_saving else '00'
+    segment_a = f"{state.wind_and_wind_break_direct:02x}" if controls.get('wind_and_wind_break') else '00'
+    buzzer_segment = '01' if controls.get('buzzer') else '00'
+    
+    payload = "4101301008" + segment_x + "0000" + segment_y + segment_z + segment_a + buzzer_segment + "0000000000000000"
+    fcc = calc_fcc(payload)
+    return 'fc' + payload + fcc
 
 class MitsubishiController:
     def __init__(self, device_ip: str):
         self.device_ip = device_ip
-        self.state = AirconState()
+        self.state = ParsedDeviceState()
         
     def get_crypto_key(self):
         """Get the crypto key, same as TypeScript implementation"""
@@ -236,7 +289,17 @@ class MitsubishiController:
             # Parse the XML response
             root = ET.fromstring(response)
             
-            # Extract device identity
+            # Extract code values for parsing
+            code_values_elems = root.findall('.//CODE/VALUE')
+            code_values = [elem.text for elem in code_values_elems if elem.text]
+            
+            # Use the parser module to get structured state
+            parsed_state = parse_code_values(code_values)
+            
+            if parsed_state:
+                self.state = parsed_state
+
+            # Extract and set device identity
             mac_elem = root.find('.//MAC')
             if mac_elem is not None:
                 self.state.mac = mac_elem.text
@@ -244,24 +307,9 @@ class MitsubishiController:
             serial_elem = root.find('.//SERIAL')
             if serial_elem is not None:
                 self.state.serial = serial_elem.text
-            
-            # Parse CODE values that contain the actual device state
-            code_values = root.findall('.//CODE/VALUE')
-            for value_elem in code_values:
-                if value_elem.text:
-                    self.parse_code_value(value_elem.text)
-                    
+
         except ET.ParseError as e:
             print(f"Error parsing status response: {e}")
-
-    def parse_code_value(self, hex_value):
-        """Parse individual CODE VALUE hex strings to extract device state"""
-        # The hex values contain encoded device state information
-        # This would need reverse engineering based on the TypeScript parsers
-        # For now, we just validate the format
-        if len(hex_value) > 20 and all(c in '0123456789abcdef' for c in hex_value.lower()):
-            # Valid hex string - could be processed further in future versions
-            pass
 
     def set_power(self, power_on: bool):
         """Set power on/off"""
@@ -378,11 +426,14 @@ class MitsubishiController:
         return {
             'mac': self.state.mac,
             'serial': self.state.serial,
-            'power': 'ON' if self.state.power_on else 'OFF',
+            'power': 'ON' if self.state.power_on_off == PowerOnOff.ON else 'OFF',
             'mode': self.state.drive_mode.name,
             'target_temp': self.state.temperature / 10.0,
             'room_temp': self.state.room_temperature / 10.0,
             'fan_speed': self.state.wind_speed.name,
+            'outside_temp': self.state.outside_temperature / 10.0 if self.state.outside_temperature else None,
+            'error_code': self.state.error_code,
+            'abnormal_state': self.state.is_abnormal_state,
         }
 
 def format_output(data, format_type):
@@ -625,9 +676,52 @@ def main():
                 print(response)
                 print()
             
-            # Parse and format the response
-            parsed_data = controller.parse_full_response(response)
-            formatted_output = format_output(parsed_data, args.format)
+            # Parse both raw response and structured device state
+            raw_data = controller.parse_full_response(response)
+            controller.parse_status_response(response)  # This populates controller.state
+            
+            # Create combined data with both raw and parsed information
+            combined_data = dict(raw_data) if raw_data else {}
+            
+            # Add parsed device state directly to top level - safely extract from nested structure
+            # General states
+            if controller.state.general:
+                combined_data.update({
+                    'power': 'ON' if controller.state.general.power_on_off == PowerOnOff.ON else 'OFF',
+                    'mode': controller.state.general.drive_mode.name,
+                    'target_temp_celsius': controller.state.general.temperature / 10.0,
+                    'fan_speed': controller.state.general.wind_speed.name,
+                    'vertical_vane_right': controller.state.general.vertical_wind_direction_right.name,
+                    'vertical_vane_left': controller.state.general.vertical_wind_direction_left.name,
+                    'horizontal_vane': controller.state.general.horizontal_wind_direction.name,
+                    'dehumidifier_setting': controller.state.general.dehum_setting,
+                    'power_saving_mode': controller.state.general.is_power_saving,
+                    'wind_and_break_direct': controller.state.general.wind_and_wind_break_direct,
+                })
+            
+            # Sensor states
+            if controller.state.sensors:
+                combined_data.update({
+                    'room_temp_celsius': controller.state.sensors.room_temperature / 10.0,
+                    'outside_temp_celsius': controller.state.sensors.outside_temperature / 10.0 if controller.state.sensors.outside_temperature else None,
+                    'thermal_sensor_active': controller.state.sensors.thermal_sensor,
+                    'wind_speed_pr557': controller.state.sensors.wind_speed_pr557,
+                })
+            
+            # Error states
+            if controller.state.errors:
+                combined_data.update({
+                    'error_state': controller.state.errors.is_abnormal_state,
+                    'error_code': controller.state.errors.error_code
+                })
+            
+            # Device identity (these might overwrite the raw mac/serial, but that's fine)
+            combined_data.update({
+                'mac_address': controller.state.mac,
+                'serial_number': controller.state.serial,
+            })
+            
+            formatted_output = format_output(combined_data, args.format)
             
             if args.format == 'table':
                 print("\nDevice Status:")
@@ -707,9 +801,9 @@ def main():
     if args.mode:
         mode_map = {
             'auto': DriveMode.AUTO,
-            'cool': DriveMode.COOL,
-            'heat': DriveMode.HEAT,
-            'dry': DriveMode.DRY,
+            'cool': DriveMode.COOLER,
+            'heat': DriveMode.HEATER,
+            'dry': DriveMode.DEHUM,
             'fan': DriveMode.FAN
         }
         print(f"Setting mode to {args.mode.upper()}...")
@@ -725,7 +819,7 @@ def main():
             1: WindSpeed.LEVEL_1,
             2: WindSpeed.LEVEL_2,
             3: WindSpeed.LEVEL_3,
-            4: WindSpeed.LEVEL_4
+            4: WindSpeed.LEVEL_FULL
         }
         speed_name = "AUTO" if args.fan_speed == 0 else f"LEVEL_{args.fan_speed}"
         print(f"Setting fan speed to {speed_name}...")
