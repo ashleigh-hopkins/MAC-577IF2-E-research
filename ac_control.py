@@ -305,51 +305,68 @@ class MitsubishiController:
         return response is not None
 
     def parse_full_response(self, response):
-        """Parse the full device response into structured data"""
-        data = {}
+        """Parse the full device response into structured data dynamically"""
         try:
             root = ET.fromstring(response)
-            
-            # Basic device info
-            data['mac'] = self._get_element_text(root, './/MAC')
-            data['serial'] = self._get_element_text(root, './/SERIAL')
-            data['connect'] = self._get_element_text(root, './/CONNECT')
-            data['status'] = self._get_element_text(root, './/STATUS')
-            data['datdate'] = self._get_element_text(root, './/DATDATE')
-            data['app_ver'] = self._get_element_text(root, './/APP_VER')
-            data['ssl_limit'] = self._get_element_text(root, './/SSL_LIMIT')
-            data['rssi'] = self._get_element_text(root, './/RSSI')
-            data['echonet'] = self._get_element_text(root, './/ECHONET')
-            
-            # LED information
-            led_data = {}
-            for i in range(1, 5):
-                led_value = self._get_element_text(root, f'.//LED{i}')
-                if led_value:
-                    led_data[f'led{i}'] = led_value
-            if led_data:
-                data['leds'] = led_data
-            
-            # PROFILECODE values
-            profile_values = []
-            for value_elem in root.findall('.//PROFILECODE/VALUE'):
-                if value_elem.text:
-                    profile_values.append(value_elem.text)
-            if profile_values:
-                data['profile_codes'] = profile_values
-            
-            # CODE values (device state)
-            code_values = []
-            for value_elem in root.findall('.//CODE/VALUE'):
-                if value_elem.text:
-                    code_values.append(value_elem.text)
-            if code_values:
-                data['code_values'] = code_values
-                
+            return self._parse_xml_element_recursive(root)
         except ET.ParseError as e:
-            data['error'] = f"XML parsing error: {e}"
+            return {'error': f"XML parsing error: {e}"}
+    
+    def _parse_xml_element_recursive(self, element, path=""):
+        """Recursively parse XML elements into a dictionary structure"""
+        result = {}
+        
+        # Handle elements that have text content
+        if element.text and element.text.strip():
+            # If element has both text and children, store text as '_text'
+            if len(element) > 0:
+                result['_text'] = element.text.strip()
+            else:
+                # If it's a leaf element with just text, return the text directly
+                return element.text.strip()
+        
+        # Process child elements
+        for child in element:
+            child_name = child.tag.lower()
+            child_result = self._parse_xml_element_recursive(child, f"{path}/{child_name}")
             
-        return data
+            # Handle multiple elements with the same name
+            if child_name in result:
+                # Convert to list if we encounter a duplicate
+                if not isinstance(result[child_name], list):
+                    result[child_name] = [result[child_name]]
+                result[child_name].append(child_result)
+            else:
+                result[child_name] = child_result
+        
+        # Special handling for common collection patterns
+        result = self._normalize_collections(result)
+        
+        return result if result else None
+    
+    def _normalize_collections(self, data):
+        """Normalize common XML collection patterns for better usability"""
+        if not isinstance(data, dict):
+            return data
+            
+        normalized = {}
+        
+        for key, value in data.items():
+            # Handle VALUE collections (like CODE/VALUE, PROFILECODE/VALUE)
+            if key.endswith('code') and isinstance(value, dict) and 'value' in value:
+                if isinstance(value['value'], list):
+                    normalized[f"{key}_values"] = value['value']
+                else:
+                    normalized[f"{key}_values"] = [value['value']]
+            # Handle LED patterns (LED1, LED2, etc.)
+            elif key.startswith('led') and key[3:].isdigit():
+                if 'leds' not in normalized:
+                    normalized['leds'] = {}
+                normalized['leds'][key] = value
+            else:
+                normalized[key] = value
+                
+        return normalized
     
     def _get_element_text(self, root, xpath):
         """Safely extract text from XML element"""
@@ -424,37 +441,101 @@ def flatten_dict(d, parent_key='', sep='_'):
     return dict(items)
 
 def format_table(data):
-    """Format data as a readable table"""
+    """Format data as a readable table dynamically"""
     lines = []
     
-    # Device Information Section
-    lines.append("Device Information:")
-    lines.append("-" * 20)
-    basic_fields = ['mac', 'serial', 'connect', 'status', 'datdate', 'app_ver', 'ssl_limit', 'rssi', 'echonet']
-    for field in basic_fields:
-        if field in data and data[field] is not None:
-            lines.append(f"  {field.upper()}: {data[field]}")
+    if not isinstance(data, dict):
+        return str(data)
     
-    # LED Status
-    if 'leds' in data:
-        lines.append("\nLED Status:")
-        lines.append("-" * 11)
-        for led, value in data['leds'].items():
-            lines.append(f"  {led.upper()}: {value}")
+    # Function to format individual sections
+    def format_section(title, section_data, indent=0):
+        section_lines = []
+        prefix = "  " * indent
+        
+        if isinstance(section_data, dict):
+            # Check if this looks like a collection of similar items (like LEDs)
+            if all(key.startswith(next(iter(section_data.keys()))[:3]) for key in section_data.keys() if len(key) > 3):
+                # Similar keys, format as a grouped section
+                for key, value in sorted(section_data.items()):
+                    if isinstance(value, (dict, list)):
+                        section_lines.append(f"{prefix}{key.upper()}: {format_complex_value(value)}")
+                    else:
+                        section_lines.append(f"{prefix}{key.upper()}: {value}")
+            else:
+                # Different keys, format as individual items
+                for key, value in sorted(section_data.items()):
+                    if isinstance(value, (dict, list)):
+                        section_lines.append(f"{prefix}{key.upper()}: {format_complex_value(value)}")
+                    else:
+                        section_lines.append(f"{prefix}{key.upper()}: {value}")
+        elif isinstance(section_data, list):
+            for i, item in enumerate(section_data):
+                if isinstance(item, (dict, list)):
+                    section_lines.append(f"{prefix}[{i}]: {format_complex_value(item)}")
+                else:
+                    section_lines.append(f"{prefix}[{i}]: {item}")
+        else:
+            section_lines.append(f"{prefix}{section_data}")
+        
+        return section_lines
     
-    # Profile Codes
-    if 'profile_codes' in data:
-        lines.append("\nProfile Codes:")
-        lines.append("-" * 14)
-        for i, code in enumerate(data['profile_codes']):
-            lines.append(f"  [{i}]: {code}")
+    def format_complex_value(value):
+        """Format complex values (dicts/lists) in a compact way"""
+        if isinstance(value, dict):
+            if len(value) <= 3:  # Small dict, format inline
+                return "{" + ", ".join(f"{k}: {v}" for k, v in value.items()) + "}"
+            else:
+                return f"{{...{len(value)} items...}}"
+        elif isinstance(value, list):
+            if len(value) <= 3:  # Small list, format inline
+                return "[" + ", ".join(str(item)[:20] for item in value) + "]"
+            else:
+                return f"[...{len(value)} items...]"
+        else:
+            return str(value)
     
-    # Device State Codes
-    if 'code_values' in data:
-        lines.append("\nDevice State Codes:")
-        lines.append("-" * 19)
-        for i, code in enumerate(data['code_values']):
-            lines.append(f"  [{i}]: {code}")
+    # Categorize data for better organization
+    device_info = {}
+    collections = {}
+    other_data = {}
+    
+    # Known device info fields (but dynamically discovered)
+    device_fields = {'mac', 'serial', 'connect', 'status', 'datdate', 'app_ver', 'ssl_limit', 'rssi', 'echonet'}
+    
+    for key, value in data.items():
+        if key.lower() in device_fields:
+            device_info[key] = value
+        elif key.endswith('_values') or key in ['leds', 'codes'] or isinstance(value, list):
+            collections[key] = value
+        else:
+            other_data[key] = value
+    
+    # Format device information section
+    if device_info:
+        title = "Device Information"
+        lines.append(title + ":")
+        lines.append("-" * len(title))
+        lines.extend(format_section("", device_info))
+    
+    # Format collections (arrays, grouped data)
+    for key, value in collections.items():
+        if lines:  # Add spacing if not first section
+            lines.append("")
+        
+        title = key.replace('_', ' ').title()
+        lines.append(title + ":")
+        lines.append("-" * len(title))
+        lines.extend(format_section("", value))
+    
+    # Format other data
+    if other_data:
+        if lines:  # Add spacing if not first section
+            lines.append("")
+        
+        title = "Additional Information"
+        lines.append(title + ":")
+        lines.append("-" * len(title))
+        lines.extend(format_section("", other_data))
     
     return '\n'.join(lines)
 
