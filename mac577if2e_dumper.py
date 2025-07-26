@@ -94,29 +94,31 @@ class MAC577IF2EDumper:
                 self.log("Analyze mode already enabled")
                 return True
             
-            if current_status == "ON" or force_toggle:
-                # Disable first to reset the mode
-                self.log("Disabling analyze mode first to reset...")
-                disable_data = {'debugStatus': 'OFF'}
-                
-                try:
-                    response = self.session.post(
-                        urljoin(self.base_url, "/analyze"),
-                        auth=HTTPBasicAuth(self.admin_username, self.admin_password),
-                        data=disable_data,
-                        timeout=30
-                    )
+            # Only toggle if not ON or if force_toggle is true
+            if current_status != "ON" or force_toggle:
+                # Disable first to reset the mode if necessary
+                if current_status == "ON" or force_toggle:
+                    self.log("Disabling analyze mode first to reset...")
+                    disable_data = {'debugStatus': 'OFF'}
                     
-                    if response.status_code not in [200, 301, 302]:
-                        self.log(f"Warning: Failed to disable analyze mode: {response.status_code}")
-                    else:
-                        self.log("Analyze mode disabled")
-                except Exception as disable_error:
-                    self.log(f"Warning: Exception disabling analyze mode: {disable_error}")
-                
-                # Wait for device to settle
-                self.log("Waiting for device to settle...")
-                time.sleep(5)
+                    try:
+                        response = self.session.post(
+                            urljoin(self.base_url, "/analyze"),
+                            auth=HTTPBasicAuth(self.admin_username, self.admin_password),
+                            data=disable_data,
+                            timeout=30
+                        )
+                        
+                        if response.status_code not in [200, 301, 302]:
+                            self.log(f"Warning: Failed to disable analyze mode: {response.status_code}")
+                        else:
+                            self.log("Analyze mode disabled")
+                    except Exception as disable_error:
+                        self.log(f"Warning: Exception disabling analyze mode: {disable_error}")
+                    
+                    # Wait for device to settle
+                    self.log("Waiting for device to settle...")
+                    time.sleep(5)
             
             # Enable analyze mode
             self.log("Enabling analyze mode...")
@@ -370,14 +372,58 @@ class MAC577IF2EDumper:
     
     def establish_robust_connection(self, command, max_retries=3):
         """Establish a robust telnet connection and send command"""
+        # First attempt: try with existing connection state (if any)
+        if self.telnet_socket:
+            self.log("Attempting to use existing telnet connection...")
+            try:
+                # Send command immediately
+                cmd_bytes = (command + '\r').encode('utf-8')
+                self.telnet_socket.send(cmd_bytes)
+                self.log("Command sent using existing connection")
+                
+                # Try to get data immediately
+                self.telnet_socket.settimeout(2)  # Short timeout for immediate response
+                data = self.telnet_socket.recv(512)  # Small initial read
+                
+                if data:
+                    self.log(f"SUCCESS using existing connection: {len(data)} bytes")
+                    return data  # Return the first chunk of data
+                else:
+                    self.log("No data received on existing connection")
+                    
+            except Exception as e:
+                self.log(f"Existing connection failed: {e}")
+                # Close the broken connection
+                try:
+                    self.telnet_socket.close()
+                except:
+                    pass
+                self.telnet_socket = None
+        
+        # Now try with fresh connections if existing didn't work
         for attempt in range(max_retries):
             self.log(f"Connection attempt {attempt + 1}/{max_retries}")
             
-            # Force reset analyze mode before each attempt
-            self.log("Resetting analyze mode for fresh start...")
-            if not self.enable_analyze_mode(force_toggle=True):
-                self.log(f"Failed to reset analyze mode on attempt {attempt + 1}")
-                continue
+            # Only force reset analyze mode if this is not the first attempt
+            # or if we don't have existing telnet connection
+            if attempt == 0:
+                # First attempt: check if analyze mode is already ON
+                analyze_status = self.get_analyze_status()
+                self.log(f"Current analyze status: {analyze_status}")
+                
+                if analyze_status != "ON":
+                    self.log("Analyze mode not enabled, enabling...")
+                    if not self.enable_analyze_mode():
+                        self.log(f"Failed to enable analyze mode on attempt {attempt + 1}")
+                        continue
+                else:
+                    self.log("Analyze mode already enabled")
+            else:
+                # Subsequent attempts: force reset analyze mode
+                self.log("Resetting analyze mode for fresh start...")
+                if not self.enable_analyze_mode(force_toggle=True):
+                    self.log(f"Failed to reset analyze mode on attempt {attempt + 1}")
+                    continue
             
             # Fresh telnet connection without consuming initial output
             if not self.connect_telnet(skip_initial_read=True):
@@ -416,7 +462,98 @@ class MAC577IF2EDumper:
         self.log("All connection attempts failed", "ERROR")
         return None
     
-    def dump_flash_region(self, start_offset, count, output_file, resume=False):
+    def collect_missing_rows(self, output_prefix, start_offset=0, count=1):
+        """
+        Collects skipped memory rows by dumping strategically chosen offsets.
+        This targets the specific missing data due to the device's row-skipping bug.
+        """
+        self.log("Phase 0: Collecting skipped memory rows...")
+        missing_data_map = {}  # Map offset to data
+
+        # Convert start_offset to int for calculations
+        if isinstance(start_offset, str):
+            if start_offset.lower().startswith('0x'):
+                start_offset = int(start_offset, 16)
+            else:
+                start_offset = int(start_offset, 16)
+
+        # Strategy: For the main dump region, collect data that would be at the skipped 3rd row
+        # The skipped row is always at (start_address + 0x20)
+        critical_offsets = []
+        
+        # For offset 0, strategically capture one offset that covers the missing area
+        if start_offset == 0:
+            critical_offsets = [0x10]  # Start from 0x10 to ensure coverage
+        
+        # In practice, only collect one strategic offset now
+        # critical_offsets.extend([0x20, 0x40])  # Removed extra captures for efficiency
+        
+        self.log(f"Targeting critical offset: {[hex(x) for x in critical_offsets]}")
+        
+        for offset in critical_offsets:
+            offset_hex = f"{offset:x}"
+            command = f"flash sector read={offset_hex},{count}"
+            self.log(f"Collecting missing data with command: {command}")
+
+            initial_data = self.establish_robust_connection(command)
+            if not initial_data:
+                self.log(f"Failed to collect data from offset 0x{offset:x}", "WARN")
+                continue
+
+            # Continue reading from the established connection to get full response
+            all_data = initial_data
+            try:
+                while True:
+                    self.telnet_socket.settimeout(2)
+                    additional_data = self.telnet_socket.recv(1024)
+                    if not additional_data:
+                        break
+                    all_data += additional_data
+            except socket.timeout:
+                pass  # Expected when no more data
+            except Exception as e:
+                self.log(f"Error reading additional data: {e}", "WARN")
+
+            text_data = all_data.decode('utf-8', errors='ignore')
+            hex_data = self.extract_hex_data(text_data)
+            if hex_data:
+                missing_data_map[offset] = hex_data
+                self.log(f"Collected {len(hex_data)} bytes from offset 0x{offset:x}")
+            
+            # Small delay between commands to avoid overwhelming device
+            time.sleep(2)
+
+        # Combine missing data in order
+        missing_data = bytearray()
+        for offset in sorted(missing_data_map.keys()):
+            missing_data.extend(missing_data_map[offset])
+
+        # Save missing data
+        missing_filename = f"{output_prefix}_missing_rows.bin"
+        try:
+            with open(missing_filename, 'wb') as f:
+                f.write(missing_data)
+
+            self.log(f"Missing data ({len(missing_data)} bytes) saved to: {missing_filename}")
+            
+            # Also save a metadata file explaining what was collected
+            metadata = {
+                'purpose': 'Missing row data collection (Phase 0)',
+                'device_bug': 'Device skips 3rd row (offset+0x20) in flash sector reads',
+                'collected_offsets': [hex(x) for x in sorted(missing_data_map.keys())],
+                'total_bytes': len(missing_data),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            metadata_filename = f"{output_prefix}_missing_rows_metadata.json"
+            with open(metadata_filename, 'w') as f:
+                json.dump(metadata, f, indent=2)
+                
+        except Exception as e:
+            self.log(f"Failed to save missing data: {e}", "ERROR")
+
+
+    def dump_flash_region(self, start_offset, count, output_file, resume=False, debug=False):
         """
         Dump flash memory region with progress reporting
         
@@ -442,29 +579,55 @@ class MAC577IF2EDumper:
         else:
             count_str = f"{count:x}" if count < 10 else str(count)
         
-        # Check for existing partial dump
+        # Check for existing dump (either partial or main file)
         partial_file = output_file.replace('.bin', '_partial.bin')
         metadata_file = output_file.replace('.bin', '_metadata.json')
         
         firmware_data = bytearray()
         current_address = 0
+        resume_from_address = 0
         
-        if resume and os.path.exists(partial_file) and os.path.exists(metadata_file):
+        if resume and os.path.exists(metadata_file):
             try:
                 with open(metadata_file, 'r') as f:
                     metadata = json.load(f)
-                with open(partial_file, 'rb') as f:
-                    firmware_data = bytearray(f.read())
                 
-                current_address = metadata.get('current_address', 0)
-                self.log(f"Resuming dump from address 0x{current_address:x}, {len(firmware_data)} bytes already read")
+                # Check if it's an incomplete dump that can be resumed  
+                if not metadata.get('completed', False):
+                    # Look for existing firmware data (either partial or main file)
+                    existing_file = None
+                    if os.path.exists(partial_file):
+                        existing_file = partial_file
+                    elif os.path.exists(output_file):
+                        existing_file = output_file
+                    
+                    if existing_file:
+                        with open(existing_file, 'rb') as f:
+                            firmware_data = bytearray(f.read())
+                        
+                        current_address = metadata.get('current_address', 0)
+                        resume_from_address = len(firmware_data)  # Resume from file size (byte offset)
+                        self.log(f"Resuming dump from address 0x{resume_from_address:x}, {len(firmware_data)} bytes already read")
+                    else:
+                        self.log("Metadata found but no data file to resume from", "WARN")
+                else:
+                    self.log("Dump already marked as completed, not resuming", "WARN")
             except Exception as e:
-                self.log(f"Failed to load partial dump, starting fresh: {e}", "WARN")
+                self.log(f"Failed to load existing dump, starting fresh: {e}", "WARN")
                 firmware_data = bytearray()
                 current_address = 0
+                resume_from_address = 0
         
-        # Build flash command
-        command = f"flash sector read={offset_str},{count_str}"
+        # Build flash command - for overflow dumps (count=0), use resume address as start
+        if count_str == '0' and resume_from_address > 0:
+            # Overflow dump with resume: start from resume address (in hex)
+            resume_hex = f"{resume_from_address:x}"
+            command = f"flash sector read={resume_hex},0"
+            self.log(f"Resuming overflow dump from address {resume_from_address} (0x{resume_hex})")
+        else:
+            # Normal dump or fresh start
+            command = f"flash sector read={offset_str},{count_str}"
+        
         self.log(f"Starting flash dump with command: {command}")
         
         # Use robust connection establishment for all dump types
@@ -485,6 +648,7 @@ class MAC577IF2EDumper:
         
         # Read the continuous data stream
         bytes_read = len(firmware_data)
+        bytes_skipped = 0  # Track how many bytes we've skipped during resume
         last_progress_time = time.time()
         last_progress_bytes = bytes_read
         progress_interval = 10  # Report progress every 10 seconds
@@ -511,8 +675,9 @@ class MAC577IF2EDumper:
                     # Reset no-data counter on successful read
                     no_data_count = 0
                     
-                    # Debug: always show raw data received for troubleshooting
-                    self.log(f"DEBUG: Received {len(data)} bytes: {repr(data[:100])}...")
+                    # Conditional debug logging for raw data
+                    if debug:
+                        self.log(f"DEBUG: Received {len(data)} bytes: {repr(data[:100])}...")
                     
                     # Decode and extract hex data
                     text_data = data.decode('utf-8', errors='ignore')
@@ -523,13 +688,22 @@ class MAC577IF2EDumper:
                         self.log(f"DEBUG: Received text but no hex extracted: {repr(text_data[:100])}...")
                     
                     if hex_data:
+                        # Track expected address for gap detection
+                        expected_next_address = current_address + len(hex_data)
+                        
+                        # Append hex data to firmware
                         firmware_data.extend(hex_data)
                         bytes_read = len(firmware_data)
-                        current_address += len(hex_data)
+                        current_address = expected_next_address
+                        
                         if len(firmware_data) % 1000 == 0:  # Show progress every 1000 bytes
                             self.log(f"Extracted {len(hex_data)} bytes, total: {len(firmware_data)}")
+                    else:
+                        # Detect if a row was skipped during the process
+                        if text_data.strip():  # Only warn if we got some text but no hex
+                            bytes_skipped += 16  # Assuming each row is 16 bytes
+                            self.log(f"Warning: Row may have been skipped at offset 0x{current_address:x}", "WARN")
                     
-                    # Progress reporting
                     current_time = time.time()
                     if current_time - last_progress_time >= progress_interval:
                         elapsed = current_time - last_progress_time
@@ -580,6 +754,12 @@ class MAC577IF2EDumper:
         
         except KeyboardInterrupt:
             self.log("Dump interrupted by user")
+            # Clean up intermediate files on cancellation
+            output_prefix = output_file.replace('.bin', '')
+            missing_file = f"{output_prefix}_missing_rows.bin"
+            missing_metadata_file = f"{output_prefix}_missing_rows_metadata.json"
+            self.clean_up_files(partial_file, metadata_file, missing_file, missing_metadata_file)
+            return False
         
         # Final save
         self.log(f"Dump completed. Total bytes read: {len(firmware_data):,}")
@@ -603,9 +783,8 @@ class MAC577IF2EDumper:
             
             self.log(f"Firmware saved to: {output_file}")
             
-            # Clean up partial file if dump completed successfully
-            if os.path.exists(partial_file):
-                os.remove(partial_file)
+            # Clean up intermediate files if dump completed successfully
+            self.clean_up_files(partial_file)
             
             return True
             
@@ -613,6 +792,127 @@ class MAC577IF2EDumper:
             self.log(f"Failed to save firmware file: {e}", "ERROR")
             return False
     
+    def merge_missing_rows(self, output_prefix):
+        """
+        Merge missing rows data into the main dump file if both exist.
+        This integrates the separately collected missing data into the main firmware dump.
+        
+        Process:
+        1. Parse main dump to identify where gaps/missing rows should be
+        2. Fill gaps with zeros to maintain proper offsets 
+        3. Replace zero-filled gaps with actual collected missing data when available
+        4. Overwrite the main output file with the merged result
+        """
+        main_file = f"{output_prefix}.bin"
+        missing_file = f"{output_prefix}_missing_rows.bin"
+        backup_file = f"{output_prefix}_original.bin"
+        
+        if not os.path.exists(main_file):
+            self.log(f"Main dump file not found: {main_file}", "ERROR")
+            return False
+            
+        try:
+            # Read main dump
+            with open(main_file, 'rb') as f:
+                main_data = f.read()
+            
+            # Create backup of original main file
+            with open(backup_file, 'wb') as f:
+                f.write(main_data)
+            self.log(f"Original main dump backed up to: {backup_file}")
+            
+            # Read missing rows data if available
+            missing_data = b''
+            if os.path.exists(missing_file):
+                with open(missing_file, 'rb') as f:
+                    missing_data = f.read()
+                self.log(f"Loaded missing rows data: {len(missing_data)} bytes")
+            else:
+                self.log(f"No missing rows file found, will only fill gaps with zeros", "WARN")
+            
+            # The device skips the 3rd row at offset 0x20 in the main dump
+            # The missing row we need is at offset 0x10 in the collected missing data
+            # (because the missing data was collected starting from offset 0x10)
+            
+            merged_data = bytearray()
+            gap_fills = []  # Track what gaps we fill
+            
+            missing_row_position = 0x20  # Where the gap should be in the final dump
+            missing_data_offset = 0x10   # Where the missing row is in the collected data
+            
+            if len(main_data) > missing_row_position:
+                # Split the main data at the gap position
+                before_gap = main_data[:missing_row_position]
+                after_gap = main_data[missing_row_position:]
+                
+                # Look for the missing row in collected data
+                replacement_row = b'\x00' * 16  # Default: fill with zeros
+                
+                if missing_data and len(missing_data) >= missing_data_offset + 16:
+                    # Extract the missing row from the correct position in collected data
+                    potential_row = missing_data[missing_data_offset:missing_data_offset + 16]
+                    if not all(b == 0 for b in potential_row):  # Don't replace zeros with zeros
+                        replacement_row = potential_row
+                        self.log(f"Found replacement data for missing row: {replacement_row.hex()}")
+                    else:
+                        self.log(f"Missing row data is all zeros, using zero fill")
+                else:
+                    self.log(f"No missing row data available at offset 0x{missing_data_offset:x}, filling gap with zeros")
+                
+                # Construct merged data
+                merged_data = bytearray(before_gap + replacement_row + after_gap)
+                gap_fills.append({
+                    'offset': missing_row_position,
+                    'size': 16,
+                    'filled_with': 'collected_data' if replacement_row != b'\x00' * 16 else 'zeros',
+                    'replacement_data': replacement_row.hex() if replacement_row != b'\x00' * 16 else 'zeros'
+                })
+                
+            else:
+                # Main data is too short to have the expected gap
+                merged_data = bytearray(main_data)
+                self.log(f"Main data too short ({len(main_data)} bytes) to contain expected gap at offset 0x{missing_row_position:x}")
+            
+            # Overwrite the main file with merged data
+            with open(main_file, 'wb') as f:
+                f.write(merged_data)
+            
+            self.log(f"Main dump file updated with merged data: {main_file}")
+            self.log(f"Final size: {len(merged_data):,} bytes (original: {len(main_data)}, gaps filled: {len(gap_fills)})")
+            
+            # Save merge metadata
+            merge_metadata = {
+                'main_file': main_file,
+                'backup_file': backup_file,
+                'missing_file': missing_file if os.path.exists(missing_file) else None,
+                'original_bytes': len(main_data),
+                'missing_data_bytes': len(missing_data),
+                'final_bytes': len(merged_data),
+                'gaps_filled': gap_fills,
+                'merge_strategy': 'Insert missing row from collected data at correct position',
+                'merge_timestamp': datetime.now().isoformat()
+            }
+            
+            metadata_file = f"{output_prefix}_merge_metadata.json"
+            with open(metadata_file, 'w') as f:
+                json.dump(merge_metadata, f, indent=2)
+            
+            return True
+            
+        except Exception as e:
+            self.log(f"Failed to merge files: {e}", "ERROR")
+            return False
+    
+    def clean_up_files(self, *files):
+        """Remove specified files"""
+        for file in files:
+            if os.path.exists(file):
+                try:
+                    os.remove(file)
+                    self.log(f"Removed file: {file}")
+                except Exception as e:
+                    self.log(f"Failed to remove file {file}: {e}", "WARN")
+
     def close(self):
         """Clean up connections"""
         if self.telnet_socket:
@@ -629,19 +929,19 @@ def main():
         epilog="""
 Examples:
   # Execute a single command
-  %(prog)s 192.168.0.54 --command "p"
+  %(prog)s <DEVICE_IP> --command "p"
   
   # Dump 32 sectors starting from offset 0
-  %(prog)s 192.168.0.54 --dump --offset 0 --count 32 --output firmware_0-32.bin
+  %(prog)s <DEVICE_IP> --dump --offset 0 --count 32 --output firmware_0-32.bin
   
   # Dump entire flash using overflow trick (very slow)
-  %(prog)s 192.168.0.54 --dump --offset 0 --count A --output full_firmware.bin
+  %(prog)s <DEVICE_IP> --dump --offset 0 --count A --output full_firmware.bin
   
   # Resume interrupted dump
-  %(prog)s 192.168.0.54 --dump --offset 0 --count A --output full_firmware.bin --resume
+  %(prog)s <DEVICE_IP> --dump --offset 0 --count A --output full_firmware.bin --resume
   
   # Dump AES key area
-  %(prog)s 192.168.0.54 --dump --offset e7 --count 32 --output aes_keys.bin
+  %(prog)s <DEVICE_IP> --dump --offset e7 --count 32 --output aes_keys.bin
         """
     )
     
@@ -656,14 +956,16 @@ Examples:
     # Dump parameters
     parser.add_argument('--offset', default='0', 
                        help='Starting offset for dump (hex, e.g., "e7" or "0x100")')
-    parser.add_argument('--count', default='A',
-                       help='Number of sectors to read (hex, e.g., "32" or "A" for overflow)')
+    parser.add_argument('--count', default='0',
+                       help='Number of sectors to read (hex, e.g., "32" or "0" for default complete)')
     parser.add_argument('--output', 
                        help='Output filename (auto-generated if not specified)')
     parser.add_argument('--resume', action='store_true',
                        help='Resume interrupted dump from partial file')
     parser.add_argument('--debug', action='store_true',
                        help='Enable debug output for telnet communication')
+    parser.add_argument('--collect-missing', action='store_true',
+                       help='Collect missing memory rows due to device bug (phase 0)')
     
     args = parser.parse_args()
     
@@ -689,13 +991,33 @@ Examples:
                 timestamp = int(time.time())
                 args.output = f"mac577if2e_firmware_{args.device_ip}_{timestamp}.bin"
             
+            # Phase 0: Collect missing rows if requested
+            if args.collect_missing:
+                output_prefix = args.output.replace('.bin', '')
+                dumper.collect_missing_rows(output_prefix, args.offset)
+            
             # Execute flash dump
             success = dumper.dump_flash_region(
                 args.offset, 
                 args.count, 
                 args.output,
-                args.resume
+                args.resume,
+                args.debug
             )
+            
+            # Phase 2: Merge missing rows data into main dump if both exist
+            if success and args.collect_missing:
+                output_prefix = args.output.replace('.bin', '')
+                merge_success = dumper.merge_missing_rows(output_prefix)
+                if merge_success:
+                    dumper.log("Missing rows data successfully merged into main dump")
+                    # Clean up intermediate files after successful merge
+                    missing_file = f"{output_prefix}_missing_rows.bin"
+                    missing_metadata_file = f"{output_prefix}_missing_rows_metadata.json"
+                    dumper.clean_up_files(missing_file, missing_metadata_file)
+                else:
+                    dumper.log("Failed to merge missing rows data", "WARN")
+            
             sys.exit(0 if success else 1)
     
     except KeyboardInterrupt:

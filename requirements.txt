@@ -1,0 +1,20 @@
+# Requirements for MAC-577IF-2E Air Conditioner Controller
+# 
+# Core dependencies for ac_control.py
+
+# HTTP requests
+requests>=2.28.0
+
+# Cryptography for AES encryption/decryption  
+pycryptodome>=3.15.0
+
+# Note: The following are part of Python standard library (no install needed):
+# - base64
+# - xml.etree.ElementTree  
+# - json
+# - argparse
+# - csv
+# - sys
+# - enum
+# - dataclasses (Python 3.7+)
+# - typing
