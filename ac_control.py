@@ -311,33 +311,40 @@ class MitsubishiController:
         except ET.ParseError as e:
             print(f"Error parsing status response: {e}")
 
-    def set_power(self, power_on: bool):
-        """Set power on/off"""
+    def _check_state_available(self) -> bool:
+        """Check if device state is available"""
         if not self.state.general:
             print("❌ No device state available. Fetch status first.")
             return False
-            
-        # Update the desired state
-        new_power = PowerOnOff.ON if power_on else PowerOnOff.OFF
-        updated_state = GeneralStates(
-            power_on_off=new_power,
-            temperature=self.state.general.temperature,
-            drive_mode=self.state.general.drive_mode,
-            wind_speed=self.state.general.wind_speed,
-            vertical_wind_direction_right=self.state.general.vertical_wind_direction_right,
-            vertical_wind_direction_left=self.state.general.vertical_wind_direction_left,
-            horizontal_wind_direction=self.state.general.horizontal_wind_direction,
-            dehum_setting=self.state.general.dehum_setting,
-            is_power_saving=self.state.general.is_power_saving,
-            wind_and_wind_break_direct=self.state.general.wind_and_wind_break_direct,
+        return True
+    
+    def _create_updated_state(self, **overrides) -> GeneralStates:
+        """Create updated state with specified field overrides"""
+        return GeneralStates(
+            power_on_off=overrides.get('power_on_off', self.state.general.power_on_off),
+            temperature=overrides.get('temperature', self.state.general.temperature),
+            drive_mode=overrides.get('drive_mode', self.state.general.drive_mode),
+            wind_speed=overrides.get('wind_speed', self.state.general.wind_speed),
+            vertical_wind_direction_right=overrides.get('vertical_wind_direction_right', self.state.general.vertical_wind_direction_right),
+            vertical_wind_direction_left=overrides.get('vertical_wind_direction_left', self.state.general.vertical_wind_direction_left),
+            horizontal_wind_direction=overrides.get('horizontal_wind_direction', self.state.general.horizontal_wind_direction),
+            dehum_setting=overrides.get('dehum_setting', self.state.general.dehum_setting),
+            is_power_saving=overrides.get('is_power_saving', self.state.general.is_power_saving),
+            wind_and_wind_break_direct=overrides.get('wind_and_wind_break_direct', self.state.general.wind_and_wind_break_direct),
         )
-        
+
+    def set_power(self, power_on: bool):
+        """Set power on/off"""
+        if not self._check_state_available():
+            return False
+            
+        new_power = PowerOnOff.ON if power_on else PowerOnOff.OFF
+        updated_state = self._create_updated_state(power_on_off=new_power)
         return self.send_general_control_command(updated_state, {'power_on_off': True})
 
     def set_temperature(self, temperature_celsius: float):
         """Set target temperature in Celsius"""
-        if not self.state.general:
-            print("❌ No device state available. Fetch status first.")
+        if not self._check_state_available():
             return False
             
         # Convert to 0.1°C units and validate range
@@ -346,166 +353,72 @@ class MitsubishiController:
             print(f"❌ Temperature {temperature_celsius}°C is out of range (16-32°C)")
             return False
             
-        # Update the desired state
-        updated_state = GeneralStates(
-            power_on_off=self.state.general.power_on_off,
-            temperature=temp_units,
-            drive_mode=self.state.general.drive_mode,
-            wind_speed=self.state.general.wind_speed,
-            vertical_wind_direction_right=self.state.general.vertical_wind_direction_right,
-            vertical_wind_direction_left=self.state.general.vertical_wind_direction_left,
-            horizontal_wind_direction=self.state.general.horizontal_wind_direction,
-            dehum_setting=self.state.general.dehum_setting,
-            is_power_saving=self.state.general.is_power_saving,
-            wind_and_wind_break_direct=self.state.general.wind_and_wind_break_direct,
-        )
-        
+        updated_state = self._create_updated_state(temperature=temp_units)
         return self.send_general_control_command(updated_state, {'temperature': True})
 
     def set_mode(self, mode: DriveMode):
         """Set operating mode"""
-        if not self.state.general:
-            print("❌ No device state available. Fetch status first.")
+        if not self._check_state_available():
             return False
             
-        # Update the desired state
-        updated_state = GeneralStates(
-            power_on_off=self.state.general.power_on_off,
-            temperature=self.state.general.temperature,
-            drive_mode=mode,
-            wind_speed=self.state.general.wind_speed,
-            vertical_wind_direction_right=self.state.general.vertical_wind_direction_right,
-            vertical_wind_direction_left=self.state.general.vertical_wind_direction_left,
-            horizontal_wind_direction=self.state.general.horizontal_wind_direction,
-            dehum_setting=self.state.general.dehum_setting,
-            is_power_saving=self.state.general.is_power_saving,
-            wind_and_wind_break_direct=self.state.general.wind_and_wind_break_direct,
-        )
-        
+        updated_state = self._create_updated_state(drive_mode=mode)
         return self.send_general_control_command(updated_state, {'drive_mode': True})
 
     def set_fan_speed(self, speed: WindSpeed):
         """Set fan speed"""
-        if not self.state.general:
-            print("❌ No device state available. Fetch status first.")
+        if not self._check_state_available():
             return False
             
-        # Update the desired state
-        updated_state = GeneralStates(
-            power_on_off=self.state.general.power_on_off,
-            temperature=self.state.general.temperature,
-            drive_mode=self.state.general.drive_mode,
-            wind_speed=speed,
-            vertical_wind_direction_right=self.state.general.vertical_wind_direction_right,
-            vertical_wind_direction_left=self.state.general.vertical_wind_direction_left,
-            horizontal_wind_direction=self.state.general.horizontal_wind_direction,
-            dehum_setting=self.state.general.dehum_setting,
-            is_power_saving=self.state.general.is_power_saving,
-            wind_and_wind_break_direct=self.state.general.wind_and_wind_break_direct,
-        )
-        
+        updated_state = self._create_updated_state(wind_speed=speed)
         return self.send_general_control_command(updated_state, {'wind_speed': True})
 
     def set_vertical_vane(self, direction: VerticalWindDirection, side: str = 'right'):
         """Set vertical vane direction (right or left side)"""
-        if not self.state.general:
-            print("❌ No device state available. Fetch status first.")
+        if not self._check_state_available():
             return False
         
         if side.lower() not in ['right', 'left']:
             print("❌ Side must be 'right' or 'left'")
             return False
             
-        # Update the desired state
-        updated_state = GeneralStates(
-            power_on_off=self.state.general.power_on_off,
-            temperature=self.state.general.temperature,
-            drive_mode=self.state.general.drive_mode,
-            wind_speed=self.state.general.wind_speed,
-            vertical_wind_direction_right=direction if side.lower() == 'right' else self.state.general.vertical_wind_direction_right,
-            vertical_wind_direction_left=direction if side.lower() == 'left' else self.state.general.vertical_wind_direction_left,
-            horizontal_wind_direction=self.state.general.horizontal_wind_direction,
-            dehum_setting=self.state.general.dehum_setting,
-            is_power_saving=self.state.general.is_power_saving,
-            wind_and_wind_break_direct=self.state.general.wind_and_wind_break_direct,
-        )
-        
+        if side.lower() == 'right':
+            updated_state = self._create_updated_state(vertical_wind_direction_right=direction)
+        else:
+            updated_state = self._create_updated_state(vertical_wind_direction_left=direction)
+            
         return self.send_general_control_command(updated_state, {'up_down_wind_direct': True})
 
     def set_horizontal_vane(self, direction: HorizontalWindDirection):
         """Set horizontal vane direction"""
-        if not self.state.general:
-            print("❌ No device state available. Fetch status first.")
+        if not self._check_state_available():
             return False
             
-        # Update the desired state
-        updated_state = GeneralStates(
-            power_on_off=self.state.general.power_on_off,
-            temperature=self.state.general.temperature,
-            drive_mode=self.state.general.drive_mode,
-            wind_speed=self.state.general.wind_speed,
-            vertical_wind_direction_right=self.state.general.vertical_wind_direction_right,
-            vertical_wind_direction_left=self.state.general.vertical_wind_direction_left,
-            horizontal_wind_direction=direction,
-            dehum_setting=self.state.general.dehum_setting,
-            is_power_saving=self.state.general.is_power_saving,
-            wind_and_wind_break_direct=self.state.general.wind_and_wind_break_direct,
-        )
-        
+        updated_state = self._create_updated_state(horizontal_wind_direction=direction)
         return self.send_general_control_command(updated_state, {'left_right_wind_direct': True})
 
     def set_dehumidifier(self, setting: int):
         """Set dehumidifier level (0-100)"""
-        if not self.state.general:
-            print("❌ No device state available. Fetch status first.")
+        if not self._check_state_available():
             return False
             
         if setting < 0 or setting > 100:
             print("❌ Dehumidifier setting must be between 0-100")
             return False
             
-        # Update the desired state
-        updated_state = GeneralStates(
-            power_on_off=self.state.general.power_on_off,
-            temperature=self.state.general.temperature,
-            drive_mode=self.state.general.drive_mode,
-            wind_speed=self.state.general.wind_speed,
-            vertical_wind_direction_right=self.state.general.vertical_wind_direction_right,
-            vertical_wind_direction_left=self.state.general.vertical_wind_direction_left,
-            horizontal_wind_direction=self.state.general.horizontal_wind_direction,
-            dehum_setting=setting,
-            is_power_saving=self.state.general.is_power_saving,
-            wind_and_wind_break_direct=self.state.general.wind_and_wind_break_direct,
-        )
-        
+        updated_state = self._create_updated_state(dehum_setting=setting)
         return self.send_extend08_command(updated_state, {'dehum': True})
 
     def set_power_saving(self, enabled: bool):
         """Enable or disable power saving mode"""
-        if not self.state.general:
-            print("❌ No device state available. Fetch status first.")
+        if not self._check_state_available():
             return False
             
-        # Update the desired state
-        updated_state = GeneralStates(
-            power_on_off=self.state.general.power_on_off,
-            temperature=self.state.general.temperature,
-            drive_mode=self.state.general.drive_mode,
-            wind_speed=self.state.general.wind_speed,
-            vertical_wind_direction_right=self.state.general.vertical_wind_direction_right,
-            vertical_wind_direction_left=self.state.general.vertical_wind_direction_left,
-            horizontal_wind_direction=self.state.general.horizontal_wind_direction,
-            dehum_setting=self.state.general.dehum_setting,
-            is_power_saving=enabled,
-            wind_and_wind_break_direct=self.state.general.wind_and_wind_break_direct,
-        )
-        
+        updated_state = self._create_updated_state(is_power_saving=enabled)
         return self.send_extend08_command(updated_state, {'power_saving': True})
 
     def send_buzzer_command(self, enabled: bool = True):
         """Send buzzer control command"""
-        if not self.state.general:
-            print("❌ No device state available. Fetch status first.")
+        if not self._check_state_available():
             return False
             
         return self.send_extend08_command(self.state.general, {'buzzer': enabled})
