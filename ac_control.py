@@ -583,6 +583,180 @@ class MitsubishiController:
             })
             
         return summary
+    
+    def backup_state(self, backup_file: str = 'ac_backup.json') -> bool:
+        """Backup current AC state to a JSON file"""
+        if not self._check_state_available():
+            return False
+            
+        try:
+            import os
+            from datetime import datetime
+            
+            backup_data = {
+                'timestamp': datetime.now().isoformat(),
+                'device_info': {
+                    'mac': self.state.mac,
+                    'serial': self.state.serial,
+                    'ip': self.device_ip
+                },
+                'settings': {
+                    'power': 'ON' if self.state.general.power_on_off == PowerOnOff.ON else 'OFF',
+                    'mode': self.state.general.drive_mode.name,
+                    'target_temp_celsius': self.state.general.temperature / 10.0,
+                    'fan_speed': self.state.general.wind_speed.name,
+                    'vertical_vane_right': self.state.general.vertical_wind_direction_right.name,
+                    'vertical_vane_left': self.state.general.vertical_wind_direction_left.name,
+                    'horizontal_vane': self.state.general.horizontal_wind_direction.name,
+                    'dehumidifier_setting': self.state.general.dehum_setting,
+                    'power_saving_mode': self.state.general.is_power_saving,
+                }
+            }
+            
+            with open(backup_file, 'w') as f:
+                json.dump(backup_data, f, indent=2)
+                
+            print(f"✅ AC state backed up to {backup_file}")
+            print(f"📋 Backup contains: {backup_data['settings']}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Failed to backup AC state: {e}")
+            return False
+    
+    def restore_state(self, backup_file: str = 'ac_backup.json') -> bool:
+        """Restore AC state from a JSON backup file"""
+        try:
+            import os
+            from datetime import datetime
+            
+            if not os.path.exists(backup_file):
+                print(f"❌ Backup file {backup_file} not found")
+                return False
+                
+            with open(backup_file, 'r') as f:
+                backup_data = json.load(f)
+                
+            settings = backup_data.get('settings', {})
+            device_info = backup_data.get('device_info', {})
+            timestamp = backup_data.get('timestamp', 'Unknown')
+            
+            print(f"📂 Loading backup from {timestamp}")
+            print(f"🔧 Device: {device_info.get('mac', 'Unknown')} ({device_info.get('ip', 'Unknown IP')})")
+            print(f"📋 Settings to restore: {settings}")
+            print()
+            
+            # Verify we're restoring to the same device (if MAC available)
+            if device_info.get('mac') and self.state.mac and device_info['mac'] != self.state.mac:
+                print(f"⚠️  Warning: Backup is from device {device_info['mac']} but current device is {self.state.mac}")
+                response = input("Continue anyway? (y/N): ")
+                if response.lower() != 'y':
+                    print("❌ Restore cancelled")
+                    return False
+            
+            success = True
+            
+            # Restore each setting
+            if 'power' in settings:
+                print(f"1. Setting power {settings['power']}...")
+                if not self.set_power(settings['power'] == 'ON'):
+                    success = False
+                    
+            if 'mode' in settings:
+                mode_map = {
+                    'AUTO': DriveMode.AUTO,
+                    'COOLER': DriveMode.COOLER,
+                    'HEATER': DriveMode.HEATER,
+                    'DEHUM': DriveMode.DEHUM,
+                    'FAN': DriveMode.FAN
+                }
+                print(f"2. Setting mode to {settings['mode']}...")
+                if settings['mode'] in mode_map:
+                    if not self.set_mode(mode_map[settings['mode']]):
+                        success = False
+                        
+            if 'target_temp_celsius' in settings:
+                print(f"3. Setting temperature to {settings['target_temp_celsius']}°C...")
+                if not self.set_temperature(settings['target_temp_celsius']):
+                    success = False
+                    
+            if 'fan_speed' in settings:
+                speed_map = {
+                    'AUTO': WindSpeed.AUTO,
+                    'LEVEL_1': WindSpeed.LEVEL_1,
+                    'LEVEL_2': WindSpeed.LEVEL_2,
+                    'LEVEL_3': WindSpeed.LEVEL_3,
+                    'LEVEL_FULL': WindSpeed.LEVEL_FULL
+                }
+                print(f"4. Setting fan speed to {settings['fan_speed']}...")
+                if settings['fan_speed'] in speed_map:
+                    if not self.set_fan_speed(speed_map[settings['fan_speed']]):
+                        success = False
+                        
+            if 'vertical_vane_right' in settings:
+                vane_map = {
+                    'AUTO': VerticalWindDirection.AUTO,
+                    'V1': VerticalWindDirection.V1,
+                    'V2': VerticalWindDirection.V2,
+                    'V3': VerticalWindDirection.V3,
+                    'V4': VerticalWindDirection.V4,
+                    'V5': VerticalWindDirection.V5,
+                    'SWING': VerticalWindDirection.SWING
+                }
+                print(f"5. Setting vertical vane (right) to {settings['vertical_vane_right']}...")
+                if settings['vertical_vane_right'] in vane_map:
+                    if not self.set_vertical_vane(vane_map[settings['vertical_vane_right']], 'right'):
+                        success = False
+                        
+            if 'horizontal_vane' in settings:
+                horizontal_map = {
+                    'AUTO': HorizontalWindDirection.AUTO,
+                    'L': HorizontalWindDirection.L,
+                    'LS': HorizontalWindDirection.LS,
+                    'C': HorizontalWindDirection.C,
+                    'RS': HorizontalWindDirection.RS,
+                    'R': HorizontalWindDirection.R,
+                    'LC': HorizontalWindDirection.LC,
+                    'CR': HorizontalWindDirection.CR,
+                    'LR': HorizontalWindDirection.LR,
+                    'LCR': HorizontalWindDirection.LCR,
+                    'LCR_S': HorizontalWindDirection.LCR_S
+                }
+                print(f"6. Setting horizontal vane to {settings['horizontal_vane']}...")
+                if settings['horizontal_vane'] in horizontal_map:
+                    if not self.set_horizontal_vane(horizontal_map[settings['horizontal_vane']]):
+                        success = False
+                        
+            if 'dehumidifier_setting' in settings:
+                print(f"7. Setting dehumidifier to {settings['dehumidifier_setting']}...")
+                if not self.set_dehumidifier(settings['dehumidifier_setting']):
+                    success = False
+                    
+            if 'power_saving_mode' in settings:
+                print(f"8. Setting power saving mode to {settings['power_saving_mode']}...")
+                if not self.set_power_saving(settings['power_saving_mode']):
+                    success = False
+            
+            print()
+            if success:
+                print("✅ AC state restored successfully!")
+                
+                # Verify final state
+                print("\n🔍 Verifying restored state...")
+                if self.fetch_status():
+                    status = self.get_status_summary()
+                    print("\nFinal Status:")
+                    for key, value in status.items():
+                        if key not in ['mac', 'serial', 'room_temp', 'outside_temp', 'error_code', 'abnormal_state']:
+                            print(f"  {key}: {value}")
+            else:
+                print("⚠️  AC state restored with some errors")
+                
+            return success
+            
+        except Exception as e:
+            print(f"❌ Failed to restore AC state: {e}")
+            return False
 
 def format_output(data, format_type):
     """Format data for output in various formats"""
@@ -780,7 +954,11 @@ def main():
   %(prog)s --ip <DEVICE_IP> --status
   %(prog)s --ip <DEVICE_IP> --enable-echonet
   %(prog)s --ip <DEVICE_IP> --power on --temp 24 --mode cool
-  %(prog)s --ip <DEVICE_IP> --fan-speed 2"""
+  %(prog)s --ip <DEVICE_IP> --fan-speed 2
+  %(prog)s --ip <DEVICE_IP> --backup
+  %(prog)s --ip <DEVICE_IP> --backup my_ac_settings.json
+  %(prog)s --ip <DEVICE_IP> --restore
+  %(prog)s --ip <DEVICE_IP> --restore my_ac_settings.json"""
     )
     
     # Required arguments
@@ -794,6 +972,10 @@ def main():
     # Action arguments
     parser.add_argument('--status', action='store_true', help='Fetch and display device status only')
     parser.add_argument('--enable-echonet', action='store_true', help='Send ECHONET enable command')
+    parser.add_argument('--backup', metavar='FILE', nargs='?', const='ac_backup.json',
+                       help='Backup current AC state to JSON file (default: ac_backup.json)')
+    parser.add_argument('--restore', metavar='FILE', nargs='?', const='ac_backup.json',
+                       help='Restore AC state from JSON backup file (default: ac_backup.json)')
     
     # Control arguments
     parser.add_argument('--power', choices=['on', 'off'], help='Set power state')
@@ -920,6 +1102,31 @@ def main():
             print("✗ ECHONET enable command failed")
             return 1
         return 0
+    
+    # Handle backup command
+    if args.backup:
+        print(f"Creating backup to {args.backup}...")
+        if controller.fetch_status():
+            if controller.backup_state(args.backup):
+                return 0
+            else:
+                return 1
+        else:
+            print("✗ Failed to fetch device status for backup")
+            return 1
+    
+    # Handle restore command
+    if args.restore:
+        print(f"Restoring from backup file {args.restore}...")
+        # Fetch current state first for device verification
+        if controller.fetch_status():
+            if controller.restore_state(args.restore):
+                return 0
+            else:
+                return 1
+        else:
+            print("✗ Failed to fetch current device status")
+            return 1
     
     # Handle control commands
     control_commands = [

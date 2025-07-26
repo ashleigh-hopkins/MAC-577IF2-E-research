@@ -54,6 +54,7 @@ These tools leverage discovered vulnerabilities to:
 - ✅ **Buzzer control** (audio feedback control)
 - ✅ **Environmental monitoring** (room & outside temperature sensors)
 - ✅ **Error detection** (abnormal states and error codes)
+- ✅ **State backup and restore** (save/restore complete AC configurations)
 
 **Basic Usage:**
 ```bash
@@ -84,6 +85,21 @@ python3 ac_control.py --ip <DEVICE_IP> --buzzer
 
 # Combined settings
 python3 ac_control.py --ip <DEVICE_IP> --power on --temp 23 --mode auto --fan-speed 1 --vertical-vane swing --horizontal-vane lr
+```
+
+**Backup and Restore:**
+```bash
+# Backup current AC state to default file (ac_backup.json)
+python3 ac_control.py --ip <DEVICE_IP> --backup
+
+# Backup to custom file
+python3 ac_control.py --ip <DEVICE_IP> --backup my_ac_settings.json
+
+# Restore from default backup file
+python3 ac_control.py --ip <DEVICE_IP> --restore
+
+# Restore from custom file
+python3 ac_control.py --ip <DEVICE_IP> --restore my_ac_settings.json
 ```
 
 ### 2. mac577if2e_dumper.py - Firmware Extraction Tool
