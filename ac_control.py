@@ -8,7 +8,13 @@ via command line using the new layered architecture.
 
 import argparse
 import json
+import sys
+import os
 import xml.etree.ElementTree as ET
+
+# Add the local pymitsubishi directory to the Python path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../pymitsubishi'))
+
 from pymitsubishi import MitsubishiAPI, MitsubishiController
 from pymitsubishi.mitsubishi_capabilities import CapabilityDetector
 from pymitsubishi.mitsubishi_parser import (
@@ -135,6 +141,8 @@ def main():
                        help='Detect and display device capabilities')
     parser.add_argument('--enable-echonet', action='store_true', 
                        help='Send ECHONET enable command')
+    parser.add_argument('--fetch-unit-info', action='store_true', 
+                       help='Fetch unit information from /unitinfo endpoint')
     
     # Control arguments
     parser.add_argument('--set-power', choices=['on', 'off'], 
@@ -205,6 +213,22 @@ def main():
                 print(output)
             else:
                 print("❌ Failed to fetch device status")
+                return 1
+        
+        # Handle unit info fetching
+        if args.fetch_unit_info:
+            print("🔧 Fetching unit information...")
+            unit_info = controller.get_unit_info(debug=args.debug)
+            
+            if unit_info:
+                print("✅ Successfully fetched unit information")
+                
+                output = format_output(unit_info, args.format)
+                print("\nUnit Information:")
+                print("=" * 25)
+                print(output)
+            else:
+                print("❌ Failed to fetch unit information")
                 return 1
         
         # Handle ECHONET enable command
@@ -301,7 +325,7 @@ def main():
             control_executed = True
         
         # If no specific action was requested, show basic status
-        if not any([args.fetch_status, args.detect_capabilities, args.enable_echonet, control_executed]):
+        if not any([args.fetch_status, args.detect_capabilities, args.enable_echonet, args.fetch_unit_info, control_executed]):
             print("ℹ️  No specific action requested. Fetching basic status...")
             success = controller.fetch_status(debug=args.debug)
             
