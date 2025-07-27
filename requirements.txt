@@ -1,7 +1,7 @@
 # Requirements for MAC-577IF-2E Research Project
 # 
 # Core Mitsubishi AC control library
-pymitsubishi>=0.1.5
+pymitsubishi>=0.1.6
 
 # Additional dependencies for research tools
 # (pymitsubishi already includes requests and pycryptodome)
