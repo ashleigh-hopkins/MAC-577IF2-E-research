@@ -125,6 +125,8 @@ def main():
                        default='json', help='Output format for data (default: json)')
     parser.add_argument('--include-capabilities', action='store_true',
                        help='Include capability detection in status responses')
+    parser.add_argument('--encryption-key', default='unregistered',
+                       help='Set custom encryption key for communication (default: unregistered)')
     
     # Action arguments
     parser.add_argument('--fetch-status', action='store_true', 
@@ -163,7 +165,7 @@ def main():
     args = parser.parse_args()
     
     # Initialize components
-    api = MitsubishiAPI(device_ip=args.device_ip)
+    api = MitsubishiAPI(device_ip=args.device_ip, encryption_key=args.encryption_key)
     controller = MitsubishiController(api=api)
     
     print(f"Mitsubishi Air Conditioner Controller - {args.device_ip}")
