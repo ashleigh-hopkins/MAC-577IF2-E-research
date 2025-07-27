@@ -1,20 +1,7 @@
-# Requirements for MAC-577IF-2E Air Conditioner Controller
+# Requirements for MAC-577IF-2E Research Project
 # 
-# Core dependencies for ac_control.py
+# Core Mitsubishi AC control library
+pymitsubishi>=0.1.1
 
-# HTTP requests
-requests>=2.28.0
-
-# Cryptography for AES encryption/decryption  
-pycryptodome>=3.15.0
-
-# Note: The following are part of Python standard library (no install needed):
-# - base64
-# - xml.etree.ElementTree  
-# - json
-# - argparse
-# - csv
-# - sys
-# - enum
-# - dataclasses (Python 3.7+)
-# - typing
+# Additional dependencies for research tools
+# (pymitsubishi already includes requests and pycryptodome)

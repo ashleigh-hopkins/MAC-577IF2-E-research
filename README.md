@@ -187,7 +187,17 @@ Based on reverse engineering, key areas include:
 
 ## Installation
 
-See [INSTALL.md](INSTALL.md) for detailed installation instructions and troubleshooting.
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/pymitsubishi/mac-577if-e.git
+   cd mac-577if-e
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+   This will install the `pymitsubishi` package from PyPI along with all dependencies.
 
 ## Reference Implementation
 

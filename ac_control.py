@@ -9,10 +9,9 @@ via command line using the new layered architecture.
 import argparse
 import json
 import xml.etree.ElementTree as ET
-from mitsubishi_api import MitsubishiAPI
-from mitsubishi_controller import MitsubishiController
-from mitsubishi_capabilities import CapabilityDetector
-from mitsubishi_parser import (
+from pymitsubishi import MitsubishiAPI, MitsubishiController
+from pymitsubishi.mitsubishi_capabilities import CapabilityDetector
+from pymitsubishi.mitsubishi_parser import (
     DriveMode, WindSpeed, VerticalWindDirection, HorizontalWindDirection
 )
 
