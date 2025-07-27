@@ -11,9 +11,9 @@ import json
 import xml.etree.ElementTree as ET
 from mitsubishi_api import MitsubishiAPI
 from mitsubishi_controller import MitsubishiController
-from mitsubishi_capabilities import CapabilityDetector, CapabilityType
+from mitsubishi_capabilities import CapabilityDetector
 from mitsubishi_parser import (
-    PowerOnOff, DriveMode, WindSpeed, VerticalWindDirection, HorizontalWindDirection
+    DriveMode, WindSpeed, VerticalWindDirection, HorizontalWindDirection
 )
 
 
@@ -124,6 +124,8 @@ def main():
                        help='Show debug information including raw requests/responses')
     parser.add_argument('--format', choices=['table', 'csv', 'json', 'xml'], 
                        default='json', help='Output format for data (default: json)')
+    parser.add_argument('--include-capabilities', action='store_true',
+                       help='Include capability detection in status responses')
     
     # Action arguments
     parser.add_argument('--fetch-status', action='store_true', 
@@ -185,7 +187,7 @@ def main():
         # Handle status fetching
         if args.fetch_status:
             print("📊 Fetching device status...")
-            success = controller.fetch_status(debug=args.debug)
+            success = controller.fetch_status(debug=args.debug, detect_capabilities=args.include_capabilities)
             
             if success:
                 print("✅ Successfully fetched device status")

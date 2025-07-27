@@ -11,7 +11,7 @@ import requests
 import xml.etree.ElementTree as ET
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
-from typing import Optional, Dict, Any
+from typing import Optional
 
 # Constants from the working implementation
 KEY_SIZE = 16
@@ -182,9 +182,6 @@ class MitsubishiAPI:
             print(f"Request error: {e}")
             return None
 
-    def send_command(self, command_xml: str, debug: bool = False) -> Optional[str]:
-        """Send a command to the device and return the response"""
-        return self.make_request(command_xml, debug=debug)
 
     def send_status_request(self, debug: bool = False) -> Optional[str]:
         """Send a status request to get current device state"""

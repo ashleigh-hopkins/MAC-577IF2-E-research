@@ -7,16 +7,12 @@ for Mitsubishi MAC-577IF-2E devices with ProfileCode analysis.
 """
 
 import xml.etree.ElementTree as ET
-import struct
 from typing import Dict, List, Optional, Set, Any
 from dataclasses import dataclass, field
 from enum import Enum
 
 from mitsubishi_api import MitsubishiAPI
-from mitsubishi_parser import (
-    PowerOnOff, DriveMode, WindSpeed, VerticalWindDirection, 
-    HorizontalWindDirection, parse_code_values
-)
+from mitsubishi_parser import parse_code_values
 
 
 class CapabilityType(Enum):

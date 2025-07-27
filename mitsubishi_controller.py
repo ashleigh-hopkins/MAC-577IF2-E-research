@@ -7,7 +7,7 @@ for Mitsubishi MAC-577IF-2E devices.
 """
 
 import xml.etree.ElementTree as ET
-from typing import Dict, Optional
+from typing import Dict
 from mitsubishi_api import MitsubishiAPI
 from mitsubishi_parser import (
     PowerOnOff, DriveMode, WindSpeed, VerticalWindDirection, 
@@ -23,11 +23,16 @@ class MitsubishiController:
         self.api = api
         self.state = ParsedDeviceState()
         
-    def fetch_status(self, debug: bool = False) -> bool:
-        """Fetch current device status"""
+    def fetch_status(self, debug: bool = False, detect_capabilities: bool = True) -> bool:
+        """Fetch current device status and optionally detect capabilities"""
         response = self.api.send_status_request(debug=debug)
         if response:
             self._parse_status_response(response)
+            
+            # Optionally perform capability detection
+            if detect_capabilities:
+                self._detect_capabilities_from_response(response, debug=debug)
+            
             return True
         return False
 
@@ -58,6 +63,86 @@ class MitsubishiController:
 
         except ET.ParseError as e:
             print(f"Error parsing status response: {e}")
+    
+    def _detect_capabilities_from_response(self, response: str, debug: bool = False):
+        """Detect capabilities from the status response"""
+        try:
+            from mitsubishi_capabilities import CapabilityDetector, DeviceCapabilities
+            
+            if debug:
+                print("🔍 Detecting capabilities from status response...")
+            
+            # Create a temporary capability detector to analyze the response
+            temp_detector = CapabilityDetector(api=self.api)
+            temp_detector.capabilities = DeviceCapabilities()
+            
+            # Parse the XML response for ProfileCode and other capability indicators
+            root = ET.fromstring(response)
+            
+            # Extract basic device info
+            mac_elem = root.find('.//MAC')
+            if mac_elem is not None:
+                temp_detector.capabilities.mac_address = mac_elem.text
+                
+            serial_elem = root.find('.//SERIAL')
+            if serial_elem is not None:
+                temp_detector.capabilities.serial_number = serial_elem.text
+                
+            # Look for firmware/version info
+            version_elem = root.find('.//VERSION')
+            if version_elem is not None:
+                temp_detector.capabilities.firmware_version = version_elem.text
+            
+            # Extract and analyze ProfileCodes
+            profile_elems = root.findall('.//PROFILECODE/DATA/VALUE') or root.findall('.//PROFILECODE/VALUE')
+            for elem in profile_elems:
+                if elem.text:
+                    profile_key = f"profile_{len(temp_detector.capabilities.profile_codes)}"
+                    temp_detector.capabilities.profile_codes[profile_key] = elem.text
+                    
+                    # Analyze the ProfileCode for capabilities
+                    try:
+                        analysis = temp_detector.capabilities.analyze_profile_code(elem.text)
+                        if debug:
+                            print(f"✅ ProfileCode {profile_key} analyzed successfully")
+                    except Exception as e:
+                        if debug:
+                            print(f"⚠️ Failed to analyze ProfileCode {profile_key}: {e}")
+                    
+                    # Try to extract model info from profile codes
+                    if not temp_detector.capabilities.device_model and len(elem.text) > 10:
+                        temp_detector.capabilities.device_model = elem.text[:12]
+            
+            # Extract and analyze code values for group codes
+            code_values_elems = root.findall('.//CODE/DATA/VALUE') or root.findall('.//CODE/VALUE')
+            code_values = [elem.text for elem in code_values_elems if elem.text]
+            
+            # Track group codes found
+            for code_value in code_values:
+                if len(code_value) >= 12:
+                    try:
+                        # Group code is at position 10-11 in hex string
+                        group_code = code_value[10:12]
+                        temp_detector.capabilities.supported_group_codes.add(group_code)
+                    except IndexError:
+                        continue
+            
+            # Analyze parsed state to determine capabilities
+            if self.state.general:
+                temp_detector._analyze_parsed_state(self.state)
+            
+            # Analyze group codes to validate capabilities
+            temp_detector._analyze_group_codes(debug=debug)
+            
+            # Attach the capabilities to our state
+            self.state.capabilities = temp_detector.capabilities
+            
+            if debug:
+                print(f"✅ Capabilities detected: {len(temp_detector.capabilities.capabilities)} found")
+                
+        except Exception as e:
+            if debug:
+                print(f"⚠️ Error detecting capabilities: {e}")
     
     def _check_state_available(self) -> bool:
         """Check if device state is available"""
@@ -247,4 +332,16 @@ class MitsubishiController:
                 'abnormal_state': self.state.errors.is_abnormal_state,
             })
             
+        # Include capabilities if available
+        if hasattr(self.state, 'capabilities') and self.state.capabilities:
+            summary['capabilities'] = {
+                cap_type.value: {
+                    'supported': cap.supported,
+                    'min_value': cap.min_value,
+                    'max_value': cap.max_value,
+                    'supported_values': cap.supported_values,
+                    'metadata': cap.metadata,
+                } for cap_type, cap in self.state.capabilities.capabilities.items()
+            }
+        
         return summary
