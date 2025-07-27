@@ -133,6 +133,10 @@ def main():
                        help='Include capability detection in status responses')
     parser.add_argument('--encryption-key', default='unregistered',
                        help='Set custom encryption key for communication (default: unregistered)')
+    parser.add_argument('--admin-username', default='admin',
+                       help='Admin username for /unitinfo endpoint (default: admin)')
+    parser.add_argument('--admin-password', default='me1debug@0567',
+                       help='Admin password for /unitinfo endpoint (default: me1debug@0567)')
     
     # Action arguments
     parser.add_argument('--fetch-status', action='store_true', 
@@ -173,7 +177,12 @@ def main():
     args = parser.parse_args()
     
     # Initialize components
-    api = MitsubishiAPI(device_ip=args.device_ip, encryption_key=args.encryption_key)
+    api = MitsubishiAPI(
+        device_ip=args.device_ip, 
+        encryption_key=args.encryption_key,
+        admin_username=args.admin_username,
+        admin_password=args.admin_password
+    )
     controller = MitsubishiController(api=api)
     
     print(f"Mitsubishi Air Conditioner Controller - {args.device_ip}")
