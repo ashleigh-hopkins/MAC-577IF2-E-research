@@ -49,7 +49,7 @@ def format_output(data, format_type):
         return output.getvalue().strip()
     
     else:  # table format (default)
-        return format_table(data)
+        return format_table(data, indent=2)
 
 
 def _dict_to_xml_recursive(data, parent_element):
@@ -86,23 +86,37 @@ def flatten_dict(d, parent_key='', sep='_'):
     return dict(items)
 
 
-def format_table(data):
-    """Format data as a readable table"""
+def format_table(data, indent=0):
+    """Format data as a readable table with improved formatting"""
     if not isinstance(data, dict):
         return str(data)
     
     lines = []
+    base_indent = " " * indent
+    
     for key, value in data.items():
         if isinstance(value, dict):
-            lines.append(f"{key.upper()}:")
-            lines.append("-" * len(key))
+            lines.append(f"{base_indent}{key.replace('_', ' ').title()}:")
+            lines.append(f"{base_indent}{"-" * (len(key) + 1)}")
+            # Format nested dictionaries with better structure
             for sub_key, sub_value in value.items():
-                lines.append(f"  {sub_key}: {sub_value}")
+                if isinstance(sub_value, dict):
+                    lines.append(f"{base_indent}  {sub_key.replace('_', ' ').title()}:")
+                    for nested_key, nested_value in sub_value.items():
+                        lines.append(f"{base_indent}    {nested_key}: {nested_value}")
+                elif isinstance(sub_value, list) and len(sub_value) > 3:
+                    lines.append(f"{base_indent}  {sub_key.replace('_', ' ').title()}: [{len(sub_value)} items]")
+                elif isinstance(sub_value, list):
+                    lines.append(f"{base_indent}  {sub_key.replace('_', ' ').title()}: [{', '.join(str(item) for item in sub_value)}]")
+                else:
+                    lines.append(f"{base_indent}  {sub_key.replace('_', ' ').title()}: {sub_value}")
             lines.append("")
+        elif isinstance(value, list) and len(value) > 3:
+            lines.append(f"{base_indent}{key.replace('_', ' ').title()}: [{len(value)} items]")
         elif isinstance(value, list):
-            lines.append(f"{key.upper()}: [{', '.join(str(item) for item in value)}]")
+            lines.append(f"{base_indent}{key.replace('_', ' ').title()}: [{', '.join(str(item) for item in value)}]")
         else:
-            lines.append(f"{key.upper()}: {value}")
+            lines.append(f"{base_indent}{key.replace('_', ' ').title()}: {value}")
     
     return '\n'.join(lines)
 
@@ -195,6 +209,10 @@ def main():
             detector = CapabilityDetector(api=api)
             capabilities = detector.detect_all_capabilities(debug=args.debug)
             
+            # Avoid displaying verbose profile analysis unless debug is specified
+            if not args.debug:
+                capabilities.profile_analysis = None
+                
             output = format_output(capabilities.to_dict(), args.format)
             print(output)
             
@@ -215,6 +233,40 @@ def main():
                     'device_state': controller.state.to_dict() if hasattr(controller.state, 'to_dict') else {},
                     'status_summary': controller.get_status_summary()
                 }
+                
+                # Add SwiCago-inspired enhancements summary
+                if hasattr(controller.state, 'general') and controller.state.general:
+                    general = controller.state.general
+                    enhancements = {
+                        'swicago_enhancements': {
+                            'i_see_sensor_active': general.i_see_sensor,
+                            'mode_raw_value': f"0x{general.mode_raw_value:02x}",
+                            'wide_vane_adjustment': general.wide_vane_adjustment,
+                            'temperature_mode': 'direct' if general.temp_mode else 'segment',
+                            'undocumented_patterns_detected': bool(general.undocumented_flags)
+                        }
+                    }
+                    
+                    if general.undocumented_flags:
+                        enhancements['undocumented_analysis'] = {
+                            'high_bits_count': len(general.undocumented_flags.get('high_bits_set', [])),
+                            'suspicious_patterns': len(general.undocumented_flags.get('suspicious_patterns', [])),
+                            'unknown_segments': len(general.undocumented_flags.get('unknown_segments', {}))
+                        }
+                    
+                    status_data.update(enhancements)
+                
+                # Add energy states if available
+                if hasattr(controller.state, 'energy') and controller.state.energy:
+                    energy = controller.state.energy
+                    energy_summary = {
+                        'energy_monitoring': {
+                            'compressor_frequency': energy.compressor_frequency,
+                            'operating_status': energy.operating,
+                            'estimated_power_watts': energy.estimated_power_watts
+                        }
+                    }
+                    status_data.update(energy_summary)
                 
                 output = format_output(status_data, args.format)
                 print("\nDevice Status:")
@@ -258,15 +310,15 @@ def main():
         control_commands = [
             args.set_power, args.set_temp, args.set_mode, args.set_fan_speed,
             args.set_vertical_vane, args.set_horizontal_vane, args.set_dehumidifier,
-            args.set_power_saving, args.send_buzzer
+            args.set_power_saving
         ]
-        
+
         if any(cmd is not None for cmd in control_commands) or args.send_buzzer:
             print("📋 Fetching current device state for control operations...")
-            if not controller.fetch_status(debug=args.debug):
+            if not controller.fetch_status(debug=args.debug, detect_capabilities=False):
                 print("❌ Failed to fetch device status")
                 return 1
-            
+
             print("🎮 Executing control commands...")
         
         if args.set_power:
@@ -332,11 +384,11 @@ def main():
             success = controller.send_buzzer_command(True, debug=args.debug)
             print("✅ Buzzer command sent" if success else "❌ Buzzer command failed")
             control_executed = True
-        
+
         # If no specific action was requested, show basic status
         if not any([args.fetch_status, args.detect_capabilities, args.enable_echonet, args.fetch_unit_info, control_executed]):
             print("ℹ️  No specific action requested. Fetching basic status...")
-            success = controller.fetch_status(debug=args.debug)
+            success = controller.fetch_status(debug=args.debug, detect_capabilities=False)
             
             if success:
                 summary = controller.get_status_summary()
@@ -350,6 +402,7 @@ def main():
             else:
                 print("❌ Failed to connect to device")
                 return 1
+
         
         return 0
         
