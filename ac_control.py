@@ -121,6 +121,150 @@ def format_table(data, indent=0):
     return '\n'.join(lines)
 
 
+def _analyze_all_undocumented_patterns(api, debug=False):
+    """Analyze undocumented patterns from all code entries and profilecodes in the raw response"""
+    try:
+        # Get raw response from the API
+        response = api.send_status_request(debug=debug)
+        if not response:
+            return None
+            
+        # Parse the XML response
+        root = ET.fromstring(response)
+        
+        analysis_result = {
+            'total_codes_analyzed': 0,
+            'total_profilecodes_analyzed': 0,
+            'combined_analysis': {
+                'all_high_bits_patterns': [],
+                'all_suspicious_patterns': [],
+                'all_unknown_segments': {},
+                'pattern_frequency': {},
+                'profilecode_analysis': []
+            }
+        }
+        
+        # Import the analyze_undocumented_bits function from the parser
+        from pymitsubishi.mitsubishi_parser import analyze_undocumented_bits
+        
+        # Analyze all CODE entries
+        code_values_elems = root.findall('.//CODE/DATA/VALUE') or root.findall('.//CODE/VALUE')
+        code_values = [elem.text for elem in code_values_elems if elem.text]
+        
+        for i, code_value in enumerate(code_values):
+            if code_value and len(code_value) >= 42:
+                code_analysis = analyze_undocumented_bits(code_value)
+                analysis_result['total_codes_analyzed'] += 1
+                
+                # Aggregate high bits patterns
+                if code_analysis.get('high_bits_set'):
+                    for high_bit in code_analysis['high_bits_set']:
+                        pattern_key = f"pos_{high_bit['position']}_val_{high_bit['hex']}"
+                        analysis_result['combined_analysis']['all_high_bits_patterns'].append({
+                            'code_index': i,
+                            'position': high_bit['position'],
+                            'hex': high_bit['hex'],
+                            'value': high_bit['value'],
+                            'binary': high_bit['binary']
+                        })
+                        
+                        # Track frequency
+                        freq_key = f"high_bit_pos_{high_bit['position']}"
+                        analysis_result['combined_analysis']['pattern_frequency'][freq_key] = \
+                            analysis_result['combined_analysis']['pattern_frequency'].get(freq_key, 0) + 1
+                
+                # Aggregate suspicious patterns
+                if code_analysis.get('suspicious_patterns'):
+                    for suspicious in code_analysis['suspicious_patterns']:
+                        analysis_result['combined_analysis']['all_suspicious_patterns'].append({
+                            'code_index': i,
+                            'type': suspicious['type'],
+                            'position': suspicious['position'],
+                            'hex': suspicious['hex'],
+                            'value': suspicious['value'],
+                            'possible_i_see': suspicious.get('possible_i_see', False)
+                        })
+                
+                # Aggregate unknown segments
+                if code_analysis.get('unknown_segments'):
+                    for pos, segment_data in code_analysis['unknown_segments'].items():
+                        segment_key = f"code_{i}_pos_{pos}"
+                        analysis_result['combined_analysis']['all_unknown_segments'][segment_key] = {
+                            'code_index': i,
+                            'position': pos,
+                            'hex': segment_data['hex'],
+                            'value': segment_data['value'],
+                            'binary': segment_data['binary']
+                        }
+        
+        # Analyze PROFILECODE entries
+        profile_elems = root.findall('.//PROFILECODE/DATA/VALUE') or root.findall('.//PROFILECODE/VALUE')
+        
+        for i, profile_elem in enumerate(profile_elems):
+            if profile_elem.text and len(profile_elem.text) >= 10:
+                profile_value = profile_elem.text
+                analysis_result['total_profilecodes_analyzed'] += 1
+                
+                # Analyze each profilecode for patterns
+                profile_analysis = {
+                    'profilecode_index': i,
+                    'length': len(profile_value),
+                    'raw_value': profile_value,
+                    'byte_analysis': []
+                }
+                
+                # Parse profilecode as hex and analyze byte patterns
+                try:
+                    for j in range(0, min(len(profile_value), 52), 2):  # Analyze up to 26 bytes
+                        if j + 2 <= len(profile_value):
+                            byte_hex = profile_value[j:j+2]
+                            byte_val = int(byte_hex, 16)
+                            
+                            byte_info = {
+                                'position': j // 2,
+                                'hex': byte_hex,
+                                'value': byte_val,
+                                'binary': f"{byte_val:08b}",
+                                'high_bit_set': bool(byte_val & 0x80)
+                            }
+                            
+                            profile_analysis['byte_analysis'].append(byte_info)
+                            
+                            # Track high bit patterns in profilecodes too
+                            if byte_val & 0x80:
+                                freq_key = f"profile_high_bit_pos_{j//2}"
+                                analysis_result['combined_analysis']['pattern_frequency'][freq_key] = \
+                                    analysis_result['combined_analysis']['pattern_frequency'].get(freq_key, 0) + 1
+                                    
+                except ValueError:
+                    profile_analysis['parse_error'] = f"Invalid hex in profilecode: {profile_value}"
+                
+                analysis_result['combined_analysis']['profilecode_analysis'].append(profile_analysis)
+        
+        # Add summary statistics
+        analysis_result['summary'] = {
+            'total_high_bit_patterns': len(analysis_result['combined_analysis']['all_high_bits_patterns']),
+            'total_suspicious_patterns': len(analysis_result['combined_analysis']['all_suspicious_patterns']),
+            'total_unknown_segments': len(analysis_result['combined_analysis']['all_unknown_segments']),
+            'most_frequent_patterns': sorted(
+                analysis_result['combined_analysis']['pattern_frequency'].items(),
+                key=lambda x: x[1],
+                reverse=True
+            )[:10]  # Top 10 most frequent patterns
+        }
+        
+        if debug:
+            print(f"🔍 Analyzed {analysis_result['total_codes_analyzed']} code entries and {analysis_result['total_profilecodes_analyzed']} profilecode entries")
+            print(f"📊 Found {analysis_result['summary']['total_high_bit_patterns']} high bit patterns, {analysis_result['summary']['total_suspicious_patterns']} suspicious patterns")
+        
+        return analysis_result
+        
+    except Exception as e:
+        if debug:
+            print(f"⚠️ Error in comprehensive undocumented analysis: {e}")
+        return None
+
+
 def main():
     """CLI interface for the Mitsubishi air conditioner controller"""
     parser = argparse.ArgumentParser(
@@ -247,12 +391,24 @@ def main():
                         }
                     }
                     
-                    if general.undocumented_flags:
-                        enhancements['undocumented_analysis'] = {
-                            'high_bits_count': len(general.undocumented_flags.get('high_bits_set', [])),
-                            'suspicious_patterns': len(general.undocumented_flags.get('suspicious_patterns', [])),
-                            'unknown_segments': len(general.undocumented_flags.get('unknown_segments', {}))
+                    # Enhanced undocumented analysis - examine ALL code entries and profilecodes
+                    enhanced_analysis = _analyze_all_undocumented_patterns(api, debug=args.debug)
+                    
+                    if general.undocumented_flags or enhanced_analysis:
+                        # Start with the analysis from general states
+                        undoc_analysis = {
+                            'general_state_analysis': {
+                                'high_bits_count': len(general.undocumented_flags.get('high_bits_set', [])) if general.undocumented_flags else 0,
+                                'suspicious_patterns': len(general.undocumented_flags.get('suspicious_patterns', [])) if general.undocumented_flags else 0,
+                                'unknown_segments': len(general.undocumented_flags.get('unknown_segments', {})) if general.undocumented_flags else 0
+                            }
                         }
+                        
+                        # Add comprehensive analysis of all codes and profilecodes
+                        if enhanced_analysis:
+                            undoc_analysis.update(enhanced_analysis)
+                        
+                        enhancements['undocumented_analysis'] = undoc_analysis
                     
                     status_data.update(enhancements)
                 
