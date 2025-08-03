@@ -11,6 +11,12 @@ import json
 import sys
 import os
 import xml.etree.ElementTree as ET
+import socket
+import time
+import threading
+import requests
+from requests.auth import HTTPBasicAuth
+from urllib.parse import urljoin
 
 # Add the local pymitsubishi directory to the Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../pymitsubishi'))
@@ -265,6 +271,315 @@ def _analyze_all_undocumented_patterns(api, debug=False):
         return None
 
 
+class InteractiveTelnetShell:
+    """Interactive telnet shell with analyze mode management"""
+    
+    def __init__(self, device_ip, admin_username="admin", admin_password="me1debug@0567"):
+        self.device_ip = device_ip
+        self.admin_username = admin_username
+        self.admin_password = admin_password
+        self.base_url = f"http://{device_ip}"
+        self.session = requests.Session()
+        self.telnet_socket = None
+        self.analyze_keepalive_thread = None
+        self.stop_keepalive = threading.Event()
+        
+    def log(self, message, level="INFO"):
+        """Log message with timestamp"""
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        print(f"[{timestamp}] {level}: {message}")
+        
+    def check_device_access(self):
+        """Verify admin access to device"""
+        try:
+            self.log(f"Testing admin access to {self.device_ip}...")
+            response = self.session.get(
+                urljoin(self.base_url, "/analyze"),
+                auth=HTTPBasicAuth(self.admin_username, self.admin_password),
+                timeout=10
+            )
+            if response.status_code == 200:
+                self.log("Admin access confirmed")
+                return True
+            else:
+                self.log(f"Admin access failed (status {response.status_code})", "ERROR")
+                return False
+        except Exception as e:
+            self.log(f"Failed to connect to device: {e}", "ERROR")
+            return False
+    
+    def get_analyze_status(self):
+        """Get current analyze mode status"""
+        try:
+            response = self.session.get(
+                urljoin(self.base_url, "/analyze"),
+                auth=HTTPBasicAuth(self.admin_username, self.admin_password),
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                content = response.text
+                if 'value="ON" Selected' in content:
+                    return "ON"
+                elif 'value="OFF" Selected' in content:
+                    return "OFF"
+            return None
+        except Exception as e:
+            self.log(f"Error checking analyze status: {e}", "ERROR")
+            return None
+    
+    def enable_analyze_mode(self, force_toggle=False):
+        """Enable analyze/debug mode to activate telnet"""
+        self.log("Enabling analyze mode...")
+        
+        try:
+            current_status = self.get_analyze_status()
+            self.log(f"Current analyze status: {current_status}")
+            
+            if current_status == "ON" and not force_toggle:
+                self.log("Analyze mode already enabled")
+                return True
+            
+            # Only toggle if not ON or if force_toggle is true
+            if current_status != "ON" or force_toggle:
+                # Disable first to reset the mode if necessary
+                if current_status == "ON" or force_toggle:
+                    self.log("Disabling analyze mode first to reset...")
+                    disable_data = {'debugStatus': 'OFF'}
+                    
+                    try:
+                        response = self.session.post(
+                            urljoin(self.base_url, "/analyze"),
+                            auth=HTTPBasicAuth(self.admin_username, self.admin_password),
+                            data=disable_data,
+                            timeout=30
+                        )
+                        
+                        if response.status_code not in [200, 301, 302]:
+                            self.log(f"Warning: Failed to disable analyze mode: {response.status_code}")
+                        else:
+                            self.log("Analyze mode disabled")
+                    except Exception as disable_error:
+                        self.log(f"Warning: Exception disabling analyze mode: {disable_error}")
+                    
+                    # Wait for device to settle
+                    self.log("Waiting for device to settle...")
+                    time.sleep(5)
+            
+            # Enable analyze mode
+            self.log("Enabling analyze mode...")
+            enable_data = {'debugStatus': 'ON'}
+            response = self.session.post(
+                urljoin(self.base_url, "/analyze"),
+                auth=HTTPBasicAuth(self.admin_username, self.admin_password),
+                data=enable_data,
+                timeout=30
+            )
+            
+            if response.status_code in [200, 301, 302]:
+                self.log("Analyze mode enabled successfully")
+                time.sleep(5)  # Wait for telnet to become available
+                return True
+            else:
+                self.log(f"Failed to enable analyze mode (status {response.status_code})", "ERROR")
+                return False
+                
+        except Exception as e:
+            self.log(f"Error enabling analyze mode: {e}", "ERROR")
+            return False
+    
+    def connect_telnet(self):
+        """Connect to telnet server (activated by analyze mode)"""
+        try:
+            # Clean up any existing socket
+            if self.telnet_socket:
+                try:
+                    self.telnet_socket.close()
+                except:
+                    pass
+                self.telnet_socket = None
+            
+            self.telnet_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.telnet_socket.settimeout(10)
+            self.telnet_socket.connect((self.device_ip, 23))
+            
+            # Wait for initial response and consume it
+            time.sleep(2)
+            try:
+                self.telnet_socket.settimeout(1)
+                initial_output = self.telnet_socket.recv(1024).decode('utf-8', errors='ignore')
+            except socket.timeout:
+                pass
+            
+            self.telnet_socket.settimeout(10)
+            self.log("Telnet connection established")
+            return True
+            
+        except Exception as e:
+            self.log(f"Failed to connect to telnet: {e}", "ERROR")
+            if self.telnet_socket:
+                try:
+                    self.telnet_socket.close()
+                except:
+                    pass
+                self.telnet_socket = None
+            return False
+    
+    def keepalive_analyze_mode(self):
+        """Background thread to keep analyze mode enabled"""
+        while not self.stop_keepalive.is_set():
+            try:
+                # Check every 5 minutes
+                if self.stop_keepalive.wait(300):
+                    break
+                    
+                status = self.get_analyze_status()
+                if status != "ON":
+                    self.log("Analyze mode disabled, re-enabling...", "WARN")
+                    self.enable_analyze_mode()
+                    
+                    # Reconnect telnet if needed
+                    if not self.telnet_socket:
+                        self.connect_telnet()
+                        
+            except Exception as e:
+                self.log(f"Error in keepalive thread: {e}", "ERROR")
+    
+    def execute_telnet_command(self, command, wait_time=2):
+        """Execute a telnet command and return response"""
+        if not self.telnet_socket:
+            self.log("No telnet connection available", "ERROR")
+            return None
+        
+        try:
+            # Send command with \r line ending (device requirement)
+            cmd_bytes = (command + '\r').encode('utf-8')
+            self.telnet_socket.send(cmd_bytes)
+            
+            # Wait for response
+            time.sleep(wait_time)
+            
+            # Read response
+            all_data = b''
+            attempts = 0
+            max_attempts = 5
+            
+            while attempts < max_attempts:
+                try:
+                    self.telnet_socket.settimeout(2)
+                    data = self.telnet_socket.recv(8192)
+                    if data:
+                        all_data += data
+                        time.sleep(0.5)
+                    else:
+                        break
+                except socket.timeout:
+                    break
+                except Exception:
+                    break
+                attempts += 1
+            
+            # Reset timeout
+            self.telnet_socket.settimeout(10)
+            
+            # Decode response
+            return all_data.decode('utf-8', errors='ignore').strip()
+            
+        except Exception as e:
+            self.log(f"Error executing telnet command: {e}", "ERROR")
+            return None
+    
+    def start_interactive_shell(self):
+        """Start interactive telnet shell with command history"""
+        if not self.check_device_access():
+            return False
+        
+        if not self.enable_analyze_mode():
+            return False
+        
+        if not self.connect_telnet():
+            return False
+        
+        # Start keepalive thread
+        self.analyze_keepalive_thread = threading.Thread(target=self.keepalive_analyze_mode, daemon=True)
+        self.analyze_keepalive_thread.start()
+        
+        # Start output reader thread
+        output_thread = threading.Thread(target=self._output_reader, daemon=True)
+        output_thread.start()
+        
+        print(f"\n🔗 Connected to {self.device_ip}:23")
+        print("📋 Interactive Telnet Shell - Type 'exit' to quit")
+        print("💡 Debug logging enabled - Available commands: p, ip, log level=0xff, log type=0xff")
+        print("=" * 60)
+        
+        try:
+            # First enable debug logging
+            self.log("Enabling debug logging...")
+            self.execute_telnet_command("log level=0xff")
+            time.sleep(1)
+            self.execute_telnet_command("log type=0xff")
+            time.sleep(1)
+            
+            # Interactive loop
+            while True:
+                try:
+                    command = input("telnet> ").strip()
+                    if command.lower() in ['exit', 'quit']:
+                        break
+                    
+                    if command:
+                        # Send command directly - output will be handled by reader thread
+                        cmd_bytes = (command + '\r').encode('utf-8')
+                        self.telnet_socket.send(cmd_bytes)
+                        
+                except KeyboardInterrupt:
+                    print("\n💡 Use 'exit' to quit gracefully")
+                    continue
+                except EOFError:
+                    break
+                    
+        except Exception as e:
+            self.log(f"Error in interactive shell: {e}", "ERROR")
+        
+        return True
+    
+    def _output_reader(self):
+        """Background thread to read and display telnet output"""
+        try:
+            while self.telnet_socket:
+                try:
+                    self.telnet_socket.settimeout(1)
+                    data = self.telnet_socket.recv(4096)
+                    if data:
+                        output = data.decode('utf-8', errors='ignore').strip()
+                        if output:
+                            print(output)
+                    else:
+                        break
+                except socket.timeout:
+                    continue
+                except Exception:
+                    break
+        except Exception:
+            pass
+    
+    def close(self):
+        """Clean up connections and threads"""
+        self.stop_keepalive.set()
+        
+        if self.telnet_socket:
+            try:
+                self.telnet_socket.close()
+            except:
+                pass
+            self.telnet_socket = None
+        
+        if self.analyze_keepalive_thread and self.analyze_keepalive_thread.is_alive():
+            self.analyze_keepalive_thread.join(timeout=1)
+
+
 def main():
     """CLI interface for the Mitsubishi air conditioner controller"""
     parser = argparse.ArgumentParser(
@@ -305,6 +620,8 @@ def main():
                        help='Send ECHONET enable command')
     parser.add_argument('--fetch-unit-info', action='store_true', 
                        help='Fetch unit information from /unitinfo endpoint')
+    parser.add_argument('--interactive-shell', action='store_true',
+                       help='Start interactive telnet shell with analyze mode (enables debug logging)')
     
     # Control arguments
     parser.add_argument('--set-power', choices=['on', 'off'], 
@@ -459,6 +776,28 @@ def main():
                 print("❌ ECHONET enable command failed")
                 return 1
         
+        # Handle interactive shell
+        if args.interactive_shell:
+            print("🚀 Starting interactive telnet shell...")
+            shell = InteractiveTelnetShell(
+                device_ip=args.device_ip,
+                admin_username=args.admin_username,
+                admin_password=args.admin_password
+            )
+            
+            try:
+                success = shell.start_interactive_shell()
+                if not success:
+                    print("❌ Failed to start interactive shell")
+                    return 1
+            except KeyboardInterrupt:
+                print("\n🛑 Interactive shell interrupted")
+            finally:
+                shell.close()
+                print("\n👋 Interactive shell closed")
+            
+            return 0
+        
         # Handle control commands
         control_executed = False
         
@@ -542,7 +881,7 @@ def main():
             control_executed = True
 
         # If no specific action was requested, show basic status
-        if not any([args.fetch_status, args.detect_capabilities, args.enable_echonet, args.fetch_unit_info, control_executed]):
+        if not any([args.fetch_status, args.detect_capabilities, args.enable_echonet, args.fetch_unit_info, args.interactive_shell, control_executed]):
             print("ℹ️  No specific action requested. Fetching basic status...")
             success = controller.fetch_status(debug=args.debug, detect_capabilities=False)
             
