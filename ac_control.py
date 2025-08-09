@@ -131,7 +131,7 @@ def _analyze_all_undocumented_patterns(api, debug=False):
     """Analyze undocumented patterns from all code entries and profilecodes in the raw response"""
     try:
         # Get raw response from the API
-        response = api.send_status_request(debug=debug)
+        response = api.send_status_request()
         if not response:
             return None
             
@@ -684,7 +684,7 @@ def main():
         # Handle status fetching
         if args.fetch_status:
             print("📊 Fetching device status...")
-            success = controller.fetch_status(debug=args.debug, detect_capabilities=args.include_capabilities)
+            success = controller.fetch_status(detect_capabilities=args.include_capabilities)
             
             if success:
                 print("✅ Successfully fetched device status")
@@ -752,7 +752,7 @@ def main():
         # Handle unit info fetching
         if args.fetch_unit_info:
             print("🔧 Fetching unit information...")
-            unit_info = controller.get_unit_info(debug=args.debug)
+            unit_info = controller.get_unit_info()
             
             if unit_info:
                 print("✅ Successfully fetched unit information")
@@ -768,7 +768,7 @@ def main():
         # Handle ECHONET enable command
         if args.enable_echonet:
             print("🌐 Enabling ECHONET...")
-            success = controller.enable_echonet(debug=args.debug)
+            success = controller.enable_echonet()
             
             if success:
                 print("✅ ECHONET enable command sent successfully")
@@ -810,7 +810,7 @@ def main():
 
         if any(cmd is not None for cmd in control_commands) or args.send_buzzer:
             print("📋 Fetching current device state for control operations...")
-            if not controller.fetch_status(debug=args.debug, detect_capabilities=False):
+            if not controller.fetch_status(detect_capabilities=False):
                 print("❌ Failed to fetch device status")
                 return 1
 
@@ -819,48 +819,48 @@ def main():
         if args.set_power:
             print(f"⚡ Setting power {args.set_power.upper()}...")
             power_on = args.set_power.lower() == 'on'
-            success = controller.set_power(power_on, debug=args.debug)
+            success = controller.set_power(power_on)
             print("✅ Power command sent" if success else "❌ Power command failed")
             control_executed = True
         
         if args.set_temp:
             print(f"🌡️  Setting temperature to {args.set_temp}°C...")
-            success = controller.set_temperature(args.set_temp, debug=args.debug)
+            success = controller.set_temperature(args.set_temp)
             print("✅ Temperature command sent" if success else "❌ Temperature command failed")
             control_executed = True
         
         if args.set_mode:
             print(f"🔄 Setting mode to {args.set_mode}...")
             mode = DriveMode[args.set_mode]
-            success = controller.set_mode(mode, debug=args.debug)
+            success = controller.set_mode(mode)
             print("✅ Mode command sent" if success else "❌ Mode command failed")
             control_executed = True
         
         if args.set_fan_speed is not None:
             print(f"💨 Setting fan speed to {args.set_fan_speed}...")
             speed = WindSpeed(args.set_fan_speed)
-            success = controller.set_fan_speed(speed, debug=args.debug)
+            success = controller.set_fan_speed(speed)
             print("✅ Fan speed command sent" if success else "❌ Fan speed command failed")
             control_executed = True
         
         if args.set_vertical_vane:
             print(f"📐 Setting vertical vane ({args.vane_side}) to {args.set_vertical_vane}...")
             direction = VerticalWindDirection[args.set_vertical_vane]
-            success = controller.set_vertical_vane(direction, args.vane_side, debug=args.debug)
+            success = controller.set_vertical_vane(direction, args.vane_side)
             print("✅ Vertical vane command sent" if success else "❌ Vertical vane command failed")
             control_executed = True
         
         if args.set_horizontal_vane:
             print(f"↔️ Setting horizontal vane to {args.set_horizontal_vane}...")
             direction = HorizontalWindDirection[args.set_horizontal_vane]
-            success = controller.set_horizontal_vane(direction, debug=args.debug)
+            success = controller.set_horizontal_vane(direction)
             print("✅ Horizontal vane command sent" if success else "❌ Horizontal vane command failed")
             control_executed = True
         
         if args.set_dehumidifier is not None:
             if 0 <= args.set_dehumidifier <= 100:
                 print(f"💧 Setting dehumidifier to {args.set_dehumidifier}%...")
-                success = controller.set_dehumidifier(args.set_dehumidifier, debug=args.debug)
+                success = controller.set_dehumidifier(args.set_dehumidifier)
                 print("✅ Dehumidifier command sent" if success else "❌ Dehumidifier command failed")
                 control_executed = True
             else:
@@ -870,20 +870,20 @@ def main():
         if args.set_power_saving:
             power_saving_enabled = args.set_power_saving.lower() == 'on'
             print(f"⚡ Setting power saving mode {args.set_power_saving.upper()}...")
-            success = controller.set_power_saving(power_saving_enabled, debug=args.debug)
+            success = controller.set_power_saving(power_saving_enabled)
             print("✅ Power saving command sent" if success else "❌ Power saving command failed")
             control_executed = True
         
         if args.send_buzzer:
             print("🔔 Sending buzzer command...")
-            success = controller.send_buzzer_command(True, debug=args.debug)
+            success = controller.send_buzzer_command(True)
             print("✅ Buzzer command sent" if success else "❌ Buzzer command failed")
             control_executed = True
 
         # If no specific action was requested, show basic status
         if not any([args.fetch_status, args.detect_capabilities, args.enable_echonet, args.fetch_unit_info, args.interactive_shell, control_executed]):
             print("ℹ️  No specific action requested. Fetching basic status...")
-            success = controller.fetch_status(debug=args.debug, detect_capabilities=False)
+            success = controller.fetch_status(detect_capabilities=False)
             
             if success:
                 summary = controller.get_status_summary()

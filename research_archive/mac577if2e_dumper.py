@@ -280,6 +280,29 @@ class MAC577IF2EDumper:
         
         return bytes(hex_data)
     
+    def disable_device_logging(self, debug=False):
+        """Disable device logging to prevent interference with firmware dumps"""
+        self.log("Disabling device logging to prevent interference...")
+        
+        # Send log level disable command
+        log_level_response = self.execute_telnet_command("log level=0x6c", wait_time=2, debug=debug)
+        if log_level_response is not None:
+            self.log("Log level command sent successfully")
+        else:
+            self.log("Failed to send log level command", "WARN")
+        
+        # Send log type disable command
+        log_type_response = self.execute_telnet_command("log type=0x00", wait_time=2, debug=debug)
+        if log_type_response is not None:
+            self.log("Log type command sent successfully")
+        else:
+            self.log("Failed to send log type command", "WARN")
+        
+        # Brief pause to let settings take effect
+        time.sleep(1)
+        self.log("Device logging disabled")
+        return True
+    
     def test_telnet_responsiveness(self, debug=False):
         """Test if telnet is responsive with a simple command"""
         test_commands = ["p", "ip", "ver"]  # Simple commands that should respond
@@ -629,6 +652,14 @@ class MAC577IF2EDumper:
             command = f"flash sector read={offset_str},{count_str}"
         
         self.log(f"Starting flash dump with command: {command}")
+        
+        # First ensure we have a telnet connection and disable device logging
+        if not self.ensure_telnet_responsive(debug=debug):
+            self.log("Cannot establish telnet connection for logging disable", "ERROR")
+            return False
+        
+        # Disable device logging before starting dump to prevent interference
+        self.disable_device_logging(debug=debug)
         
         # Use robust connection establishment for all dump types
         initial_data = self.establish_robust_connection(command)
